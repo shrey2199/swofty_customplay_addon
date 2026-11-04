@@ -45,4 +45,4 @@ pwsh -NoProfile -File ./Build-CustomPlay.ps1 -Tag v1.8.6 `
 - `patches/custom-play-cli.patch` contains the changes to the CLI and shared launch configuration, including the Windows batch session tests.
 - `addon/` contains the helper source, its Cargo lockfile, and the addon manifest template.
 
-This folder is the repository root. Git ignores downloaded sources, build intermediates, and generated packages. Upstream code and the Custom Play changes are provided under the terms in [LICENSE](LICENSE). The generated packages include upstream third-party notices.
+This folder is the repository root. Git ignores downloaded sources, build intermediates, and generated packages. The generated packages include upstream third-party notices.
