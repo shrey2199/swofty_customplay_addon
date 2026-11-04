@@ -1,0 +1,852 @@
+diff --git a/apps/cli/src/build.rs b/apps/cli/src/build.rs
+index 872594b6..d9791fe6 100644
+--- a/apps/cli/src/build.rs
++++ b/apps/cli/src/build.rs
+@@ -370,14 +370,17 @@ fn install_checked(
+     out: &dyn Fn(&str),
+     progress: &dyn Fn(usize, usize),
+ ) -> Result<()> {
+-    crate::setup::gate(store)?;
++    let custom = session && crate::run::configured_batch(store, &g.dir).is_some();
++    if !custom {
++        crate::setup::gate(store)?;
++    }
+     Blocked::clear(&store.root).ok();
+     stock::Report::clear(&store.root).ok();
+     // A session's wrapper checked the copy before it got here.
+     if !session {
+         check_entitled(store, g)?;
+     }
+-    let depots = check_stock(store, g, out)?;
++    let depots = if custom { None } else { check_stock(store, g, out)? };
+     let inst = Installer {
+         session,
+         depot: depots.as_ref().map_or(&() as &dyn DepotHashes, |d| d),
+diff --git a/apps/cli/src/main.rs b/apps/cli/src/main.rs
+index 4efd0fc0..7cce7e9c 100644
+--- a/apps/cli/src/main.rs
++++ b/apps/cli/src/main.rs
+@@ -32,7 +32,7 @@ use swofty_core::store::Store;
+ #[derive(Parser)]
+ #[command(
+     name = "swofty",
+-    version,
++    version = swofty_core::DISPLAY_VERSION,
+     about = "Swofty Launcher for F1 25: addons, mods and tracks"
+ )]
+ struct Cli {
+diff --git a/apps/cli/src/run.rs b/apps/cli/src/run.rs
+index e66809d5..3874686f 100644
+--- a/apps/cli/src/run.rs
++++ b/apps/cli/src/run.rs
+@@ -31,6 +31,11 @@ use crate::time::{now_secs, stamp};
+ 
+ const KB: &str = include_str!("../../../re/db/functions.tsv");
+ 
++mod batch;
++
++#[cfg(all(test, windows))]
++mod custom_tests;
++
+ #[derive(Args)]
+ pub struct RunArgs {
+     #[arg(long, default_value = DEFAULT_WINEDEBUG, help = "WINEDEBUG channels for the game process")]
+@@ -39,7 +44,7 @@ pub struct RunArgs {
+     restart: bool,
+     #[arg(
+         long,
+-        help = "Launch a Steam copy through Proton directly instead of asking Steam (an EA app copy always starts through the EA app)"
++        help = "Launch a Steam copy through Proton directly instead of asking Steam (per-folder custom batch settings take precedence)"
+     )]
+     direct: bool,
+     #[arg(
+@@ -95,6 +100,7 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
+         .clone()
+         .or_else(|| wrapped.then(|| std::env::current_dir().ok()).flatten());
+     let g = crate::build::game(store, explicit)?;
++    let custom = custom_batch(store, &g.dir)?;
+     if wrapped {
+         return wrapper(store, profile, &args, &g).inspect_err(|e| note_blocked(store, e));
+     }
+@@ -131,8 +137,10 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
+     }
+     // Modded sessions run without EA AntiCheat: the terms are accepted once,
+     // and declining means the game is not launched.
+-    crate::offline::gate(store, std::io::stdin().is_terminal())?;
+-    if args.apply {
++    if custom.is_none() {
++        crate::offline::gate(store, std::io::stdin().is_terminal())?;
++    }
++    if args.apply && custom.is_none() {
+         crate::setup::gate(store)?;
+     }
+     if let Some(state) = swofty_core::steam::find_game()
+@@ -141,15 +149,17 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
+     {
+         bail!("Steam is {state} F1 25; wait for it to finish, then press Play again");
+     }
+-    match crate::ea::store_start(Source::detect(&game)) {
+-        crate::ea::StoreStart::EaApp => {
+-            crate::ea::check_recorded(&game)?;
+-            if args.apply {
+-                crate::ea::dll_setting(store, &g, args.no_start_store)?;
++    if custom.is_none() {
++        match crate::ea::store_start(Source::detect(&game)) {
++            crate::ea::StoreStart::EaApp => {
++                crate::ea::check_recorded(&game)?;
++                if args.apply {
++                    crate::ea::dll_setting(store, &g, args.no_start_store)?;
++                }
++                crate::ea::ensure(store, args.no_start_store)?
+             }
+-            crate::ea::ensure(store, args.no_start_store)?
++            crate::ea::StoreStart::Steam => ensure_steam(store, &game, args.no_start_store)?,
+         }
+-        crate::ea::StoreStart::Steam => ensure_steam(store, &game, args.no_start_store)?,
+     }
+     let id = format!("{:x}{:x}", std::process::id(), (now_secs() * 1e6) as u64);
+     let request = LaunchRequest {
+@@ -384,6 +394,7 @@ pub fn logs(store: &Store, dir: Option<PathBuf>, exe: Option<PathBuf>) -> Result
+ }
+ 
+ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<ExitCode> {
++    let custom = custom_batch(store, &g.dir)?;
+     if let Some(running) = game_processes().first() {
+         return Err(already_running(
+             store,
+@@ -393,9 +404,11 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
+     }
+     let lock = crate::recover::lock(store, &info)?;
+     crate::recover::stale(store, &lock, g, Scope::All, &info)?;
+-    crate::offline::gate(store, false)?;
+-    swofty_core::entitlement::check_store_start(&g.dir, args.via_ea)?;
+-    crate::build::check_entitled(store, g)?;
++    if custom.is_none() {
++        crate::offline::gate(store, false)?;
++        swofty_core::entitlement::check_store_start(&g.dir, args.via_ea)?;
++        crate::build::check_entitled(store, g)?;
++    }
+     let version = swofty_core::exe_version::read(&g.dir.join(GAME_EXE));
+     if let Some(d) = swofty_core::known_problems::outdated_exe(version.as_deref()) {
+         say("warning", &format!("{}: {}", d.title, d.text()));
+@@ -480,7 +493,12 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
+     let installed = apply.then(Instant::now);
+     become_subreaper();
+     let vanilla = store.profile(&profile).is_ok_and(|p| p.is_vanilla());
+-    if crate::ea::stages_offline(args.via_ea, vanilla) {
++    if custom.is_some() {
++        say(
++            "info",
++            "custom batch launch: offline preparation is handled by the batch file",
++        );
++    } else if crate::ea::stages_offline(args.via_ea, vanilla) {
+         stage_offline(store, &game)?;
+     } else {
+         say(
+@@ -582,6 +600,10 @@ struct Session<'a> {
+ 
+ impl Drop for Session<'_> {
+     fn drop(&mut self) {
++        if game_running_in(&self.game.dir) {
++            info("F1 25 is still running; leaving the session journal for recovery after it closes");
++            return;
++        }
+         match swofty_core::offline::restore_pending(&self.store.root) {
+             Ok(true) => info("offline play: the game folder is back to vanilla"),
+             Ok(false) => {}
+@@ -949,7 +971,8 @@ fn play(
+             loader_missed(store, game, found.cause(game));
+         }
+     };
+-    let ea = match args.via_ea {
++    let custom = custom_batch(store, game)?;
++    let ea = match args.via_ea && custom.is_none() {
+         true => Some(crate::ea::start(store, game, &extra, &dir, &copies_before)?),
+         false => None,
+     };
+@@ -973,14 +996,22 @@ fn play(
+         }
+     };
+     let via_ea = ea.is_some();
+-    let (code, unread) = match ea {
+-        Some(started) => {
+-            crate::ea::wait(game, &copies_before, started, tick);
+-            (None, EA_UNREAD.to_owned())
+-        }
+-        None => {
+-            let status = wait_game(&mut spawn(target, "game_stdout.log")?, tick)?;
+-            (status.code(), why_no_code(status))
++    let (code, unread) = if let Some(batch) = custom {
++        wait_custom_batch(store, game, &batch, &dir, &copies_before, &game_env, tick)?;
++        (
++            None,
++            "the custom batch started F1 25; its exit code is unavailable".to_owned(),
++        )
++    } else {
++        match ea {
++            Some(started) => {
++                crate::ea::wait(game, &copies_before, started, tick);
++                (None, EA_UNREAD.to_owned())
++            }
++            None => {
++                let status = wait_game(&mut spawn(target, "game_stdout.log")?, tick)?;
++                (status.code(), why_no_code(status))
++            }
+         }
+     };
+     if let Some(w) = watch.as_mut()
+@@ -1049,6 +1080,124 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
+ const EA_UNREAD: &str =
+     "the EA app started F1 25, so the session has no handle on the game to read its exit code";
+ 
++pub(crate) fn configured_batch(store: &Store, game: &Path) -> Option<PathBuf> {
++    std::env::var_os("SWOFTY_CUSTOM_BATCH")
++        .map(PathBuf::from)
++        .or_else(|| store.config().launch.custom_batch(game).map(Path::to_path_buf))
++}
++
++fn custom_batch(store: &Store, game: &Path) -> Result<Option<PathBuf>> {
++    let Some(batch) = configured_batch(store, game) else {
++        return Ok(None);
++    };
++    if !cfg!(windows) {
++        bail!("Custom batch launch is only available on Windows");
++    }
++    if !game.join(GAME_EXE).is_file() {
++        bail!("{} is missing from {}", GAME_EXE, game.display());
++    }
++    if !batch.is_absolute()
++        || !batch.is_file()
++        || !batch.extension().is_some_and(|e| e.eq_ignore_ascii_case("bat"))
++        || batch.to_string_lossy().contains(['%', '\r', '\n', '"'])
++    {
++        bail!(
++            "Select an existing absolute .bat file path without percent signs or quotes: {}",
++            batch.display()
++        );
++    }
++    Ok(Some(batch))
++}
++
++fn wait_custom_batch(
++    store: &Store,
++    game: &Path,
++    batch: &Path,
++    session: &Path,
++    before: &[u32],
++    env: &std::collections::BTreeMap<String, String>,
++    mut tick: impl FnMut(),
++) -> Result<()> {
++    wait_custom_batch_for(
++        store,
++        game,
++        batch,
++        session,
++        before,
++        env,
++        &mut tick,
++        Duration::from_secs(120),
++    )
++}
++
++#[allow(clippy::too_many_arguments)]
++fn wait_custom_batch_for(
++    store: &Store,
++    game: &Path,
++    batch: &Path,
++    session: &Path,
++    before: &[u32],
++    env: &std::collections::BTreeMap<String, String>,
++    tick: &mut impl FnMut(),
++    timeout: Duration,
++) -> Result<()> {
++    let stage = StageFile(store.root.join(steam_client::STAGE_FILE));
++    stage.set("Starting F1 25 through custom batch…");
++    say(
++        "info",
++        &format!(
++            "custom batch: {} (working folder {})",
++            batch.display(),
++            game.display()
++        ),
++    );
++    let log = session.join("custom_batch.log");
++    std::fs::File::create(&log)?;
++    let mut child = batch::spawn(game, batch, env, &log).context("starting the custom batch file")?;
++    let start = Instant::now();
++    let mut seen = false;
++    let mut stopped = false;
++    let mut batch_exit = None;
++    loop {
++        let running: Vec<_> = game_processes()
++            .into_iter()
++            .filter(|g| !before.contains(&g.pid) && g.is_in(game))
++            .collect();
++        if !running.is_empty() {
++            if !seen {
++                say("info", "custom batch: F1 25 started");
++                stage.set("F1 25 is running");
++            }
++            seen = true;
++        } else if seen {
++            break;
++        }
++        tick();
++        if batch_exit.is_none() {
++            batch_exit = child.try_wait()?;
++        }
++        if !seen && (ending() || batch_exit.is_some_and(|s| !s.success()) || start.elapsed() >= timeout) {
++            child.kill().ok();
++            child.wait().ok();
++            bail!(
++                "Custom batch did not start F1 25 (batch status: {:?}); see {}",
++                batch_exit,
++                session.join("custom_batch.log").display()
++            );
++        }
++        if seen && ending() && !stopped {
++            stopped = true;
++            for g in &running {
++                stop_process(g.pid).ok();
++            }
++        }
++        std::thread::sleep(Duration::from_millis(200));
++    }
++    // The batch may outlive the game. Reap it without treating its lifetime as the game's.
++    std::thread::spawn(move || child.wait().ok());
++    Ok(())
++}
++
+ /// Why an exit status carries no code.
+ fn why_no_code(status: ExitStatus) -> String {
+     #[cfg(unix)]
+@@ -1647,6 +1796,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
+ }
+ 
+ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[String]) -> Result<Wrapper> {
++    let custom = custom_batch(store, game)?.is_some();
+     let install = steam::find_game();
+     let wrapped = install
+         .as_ref()
+@@ -1657,7 +1807,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
+                 .any(|(_, o)| steam::wrapper_installed(o))
+         })
+         .unwrap_or(false);
+-    if crate::ea::store_start(Source::detect(game)) == crate::ea::StoreStart::EaApp {
++    if !custom && crate::ea::store_start(Source::detect(game)) == crate::ea::StoreStart::EaApp {
+         let mut c = Command::new(std::env::current_exe()?);
+         c.arg("--data-dir")
+             .arg(&store.root)
+diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
+index d3ea8974..7824c41e 100644
+--- a/packages/core/src/lib.rs
++++ b/packages/core/src/lib.rs
+@@ -1,5 +1,11 @@
+ pub use swofty_addon::{GAME_ID, asset, builder, launcher, manifest, ops, view};
+ 
++/// Human-readable label for locally packaged builds; compatibility uses the package version.
++pub const DISPLAY_VERSION: &str = match option_env!("SWOFTY_BUILD_LABEL") {
++    Some(label) => label,
++    None => env!("CARGO_PKG_VERSION"),
++};
++
+ pub mod activation;
+ pub mod addon_storage;
+ pub mod app_control;
+diff --git a/packages/core/src/session.rs b/packages/core/src/session.rs
+index 42221737..57cf5ba9 100644
+--- a/packages/core/src/session.rs
++++ b/packages/core/src/session.rs
+@@ -196,6 +196,9 @@ pub fn game_args(steam_args: &[String], mode: LaunchMode) -> Vec<String> {
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ pub struct LaunchConfig {
++    /// Opt-in Windows batch launch, keyed by the game folder it applies to.
++    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
++    pub custom_batches: BTreeMap<PathBuf, PathBuf>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub cpu_affinity: Option<String>,
+     #[serde(default)]
+@@ -219,6 +222,7 @@ pub struct LaunchConfig {
+ impl Default for LaunchConfig {
+     fn default() -> Self {
+         Self {
++            custom_batches: BTreeMap::new(),
+             cpu_affinity: None,
+             env: BTreeMap::new(),
+             winedebug: default_winedebug(),
+@@ -229,6 +233,34 @@ impl Default for LaunchConfig {
+     }
+ }
+ 
++impl LaunchConfig {
++    pub fn custom_batch(&self, game: &Path) -> Option<&Path> {
++        self.custom_batches
++            .iter()
++            .find_map(|(dir, batch)| crate::copies::same_dir(dir, game).then_some(batch.as_path()))
++    }
++}
++
++#[cfg(test)]
++mod custom_launch_tests {
++    use super::*;
++
++    #[test]
++    fn old_settings_default_to_store_launch_and_custom_launch_is_per_copy() {
++        let mut config: LaunchConfig = serde_json::from_str("{}").unwrap();
++        assert!(config.custom_batch(Path::new("games/a")).is_none());
++        config
++            .custom_batches
++            .insert("games/a".into(), "scripts/play.bat".into());
++        let config: LaunchConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
++        assert_eq!(
++            config.custom_batch(Path::new("games/a")),
++            Some(Path::new("scripts/play.bat"))
++        );
++        assert!(config.custom_batch(Path::new("games/b")).is_none());
++    }
++}
++
+ fn yes() -> bool {
+     true
+ }
+diff --git a/apps/cli/src/run/batch.rs b/apps/cli/src/run/batch.rs
+new file mode 100644
+index 00000000..5780c57c
+--- /dev/null
++++ b/apps/cli/src/run/batch.rs
+@@ -0,0 +1,188 @@
++//! A hidden console keeps batch commands such as `timeout` working. A process
++//! created with CREATE_NO_WINDOW and null stdin makes timeout skip its delay.
++use std::collections::BTreeMap;
++use std::io;
++use std::path::Path;
++
++#[cfg(not(windows))]
++pub(super) type BatchChild = std::process::Child;
++
++#[cfg(not(windows))]
++pub(super) fn spawn(_: &Path, _: &Path, _: &BTreeMap<String, String>, _: &Path) -> io::Result<BatchChild> {
++    Err(io::Error::new(
++        io::ErrorKind::Unsupported,
++        "Custom batch launch requires Windows",
++    ))
++}
++
++#[cfg(windows)]
++mod windows {
++    use super::*;
++    use std::ffi::c_void;
++    use std::os::windows::ffi::OsStrExt;
++    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
++    use std::os::windows::process::ExitStatusExt;
++    use std::process::ExitStatus;
++    use std::ptr::null;
++
++    type Handle = *mut c_void;
++
++    #[repr(C)]
++    struct StartupInfo {
++        cb: u32,
++        reserved: *mut u16,
++        desktop: *mut u16,
++        title: *mut u16,
++        x: u32,
++        y: u32,
++        width: u32,
++        height: u32,
++        x_chars: u32,
++        y_chars: u32,
++        fill: u32,
++        flags: u32,
++        show: u16,
++        reserved_len: u16,
++        reserved_bytes: *mut u8,
++        stdin: Handle,
++        stdout: Handle,
++        stderr: Handle,
++    }
++
++    #[repr(C)]
++    struct ProcessInfo {
++        process: Handle,
++        thread: Handle,
++        pid: u32,
++        tid: u32,
++    }
++
++    #[link(name = "kernel32")]
++    unsafe extern "system" {
++        fn CreateProcessW(
++            app: *const u16,
++            command: *mut u16,
++            process_attrs: *const c_void,
++            thread_attrs: *const c_void,
++            inherit: i32,
++            flags: u32,
++            env: *const c_void,
++            cwd: *const u16,
++            startup: *const StartupInfo,
++            info: *mut ProcessInfo,
++        ) -> i32;
++        fn CloseHandle(handle: Handle) -> i32;
++        fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
++        fn GetExitCodeProcess(handle: Handle, code: *mut u32) -> i32;
++        fn TerminateProcess(handle: Handle, code: u32) -> i32;
++    }
++
++    pub(in super::super) struct BatchChild {
++        handle: OwnedHandle,
++    }
++
++    impl BatchChild {
++        pub(in super::super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
++            // SAFETY: OwnedHandle keeps this process handle valid for the call.
++            match unsafe { WaitForSingleObject(self.handle.as_raw_handle(), 0) } {
++                258 => Ok(None), // WAIT_TIMEOUT
++                0 => {
++                    let mut code = 0;
++                    // SAFETY: code is a writable DWORD and the process handle is valid.
++                    if unsafe { GetExitCodeProcess(self.handle.as_raw_handle(), &mut code) } == 0 {
++                        return Err(io::Error::last_os_error());
++                    }
++                    Ok(Some(ExitStatus::from_raw(code)))
++                }
++                _ => Err(io::Error::last_os_error()),
++            }
++        }
++
++        pub(in super::super) fn kill(&mut self) -> io::Result<()> {
++            // SAFETY: the owned handle refers only to the batch process we created.
++            if unsafe { TerminateProcess(self.handle.as_raw_handle(), 1) } == 0 {
++                return Err(io::Error::last_os_error());
++            }
++            Ok(())
++        }
++
++        pub(in super::super) fn wait(&mut self) -> io::Result<ExitStatus> {
++            // SAFETY: the handle remains owned throughout this blocking wait.
++            if unsafe { WaitForSingleObject(self.handle.as_raw_handle(), u32::MAX) } != 0 {
++                return Err(io::Error::last_os_error());
++            }
++            self.try_wait()?
++                .ok_or_else(|| io::Error::other("batch process did not exit"))
++        }
++    }
++
++    fn wide(value: &std::ffi::OsStr) -> Vec<u16> {
++        value.encode_wide().chain(Some(0)).collect()
++    }
++
++    pub(in super::super) fn spawn(
++        game: &Path,
++        batch: &Path,
++        env: &BTreeMap<String, String>,
++        log: &Path,
++    ) -> io::Result<BatchChild> {
++        let root = std::env::var_os("SystemRoot").ok_or_else(|| io::Error::other("SystemRoot is missing"))?;
++        let cmd = std::path::PathBuf::from(root).join("System32").join("cmd.exe");
++        let app = wide(cmd.as_os_str());
++        // Let Windows create console stdin with read/write access. Redirect only
++        // output in cmd: an inherited null or read-only stdin breaks timeout.exe.
++        let mut command = wide(std::ffi::OsStr::new(&format!(
++            "cmd.exe /d /v:off /s /c \"\"{}\" >\"%SWOFTY_BATCH_LOG%\" 2>&1\"",
++            batch.display()
++        )));
++        let cwd = wide(game.as_os_str());
++        let mut child_env = env.clone();
++        child_env.insert("SWOFTY_BATCH_LOG".to_owned(), log.to_string_lossy().into_owned());
++        let mut entries: Vec<_> = child_env.iter().collect();
++        entries.sort_by_key(|(name, _)| name.to_uppercase());
++        let mut block: Vec<u16> = entries
++            .iter()
++            .flat_map(|(k, v)| format!("{k}={v}\0").encode_utf16().collect::<Vec<_>>())
++            .collect();
++        if block.is_empty() {
++            block.push(0);
++        }
++        block.push(0);
++        // SAFETY: zero is valid for every optional pointer/flag in these Win32 structures.
++        let mut startup: StartupInfo = unsafe { std::mem::zeroed() };
++        startup.cb = std::mem::size_of::<StartupInfo>() as u32;
++        startup.flags = 0x00000001; // STARTF_USESHOWWINDOW; retain default console stdin
++        startup.show = 0; // SW_HIDE
++        let mut info: ProcessInfo = unsafe { std::mem::zeroed() };
++        // SAFETY: all wide strings/blocks are terminated and live through the call;
++        // structures have the Windows ABI layout. No parent handles are inherited.
++        let ok = unsafe {
++            CreateProcessW(
++                app.as_ptr(),
++                command.as_mut_ptr(),
++                null(),
++                null(),
++                0,
++                0x00000010 | 0x00000400, // CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT
++                block.as_ptr().cast(),
++                cwd.as_ptr(),
++                &startup,
++                &mut info,
++            )
++        };
++        if ok == 0 {
++            return Err(io::Error::last_os_error());
++        }
++        // SAFETY: CreateProcessW returned two owned handles; the thread handle is
++        // unused, and OwnedHandle takes responsibility for the process handle.
++        unsafe {
++            CloseHandle(info.thread);
++        }
++        Ok(BatchChild {
++            handle: unsafe { OwnedHandle::from_raw_handle(info.process) },
++        })
++    }
++}
++
++#[cfg(windows)]
++pub(super) use windows::spawn;
+diff --git a/apps/cli/src/run/custom_tests.rs b/apps/cli/src/run/custom_tests.rs
+new file mode 100644
+index 00000000..7b8db48b
+--- /dev/null
++++ b/apps/cli/src/run/custom_tests.rs
+@@ -0,0 +1,240 @@
++//! Windows process tests use a copy of cmd.exe as the game; no real game is started.
++use super::*;
++
++struct Fixture {
++    root: PathBuf,
++    store: Store,
++    game: PathBuf,
++    batch: PathBuf,
++    session: PathBuf,
++}
++
++impl Fixture {
++    fn new(script: &str) -> Self {
++        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++        let root = std::env::temp_dir().join(format!(
++            "swofty custom batch {} {}",
++            std::process::id(),
++            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
++        ));
++        let game = root.join("game folder");
++        let session = root.join("session");
++        std::fs::create_dir_all(&game).unwrap();
++        std::fs::create_dir_all(&session).unwrap();
++        let batch = root.join("launch game.bat");
++        std::fs::write(&batch, script).unwrap();
++        let store = Store::new(root.join("data"));
++        Self {
++            root,
++            store,
++            game,
++            batch,
++            session,
++        }
++    }
++
++    fn run(&self) -> Result<()> {
++        let env = std::env::vars().collect();
++        wait_custom_batch_for(
++            &self.store,
++            &self.game,
++            &self.batch,
++            &self.session,
++            &[],
++            &env,
++            &mut || {},
++            Duration::from_secs(5),
++        )
++    }
++
++    fn install_mod(&self) -> Game {
++        let target = self.game.join("game_package/db.bin");
++        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
++        std::fs::write(&target, "original").unwrap();
++        let source = self.root.join("mod.bin");
++        std::fs::write(&source, "modded").unwrap();
++        let game = Game {
++            identity: swofty_core::baseline::Identity::detect(&self.game, Some(1)).unwrap(),
++            dir: self.game.clone(),
++            user_reg: None,
++        };
++        let plan = swofty_core::install::Plan {
++            profile: "custom".into(),
++            data: [("game_package/db.bin".to_owned(), source)].into(),
++            ..Default::default()
++        };
++        Installer {
++            session: true,
++            ..Installer::new(&self.store.root, &game)
++        }
++        .apply(&plan)
++        .unwrap();
++        game
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        stop_game_in(&self.game).ok();
++        std::fs::remove_dir_all(&self.root).ok();
++    }
++}
++
++#[test]
++fn detached_game_outlives_the_batch_and_is_waited_for_with_spaces_in_paths() {
++    let f = Fixture::new(
++        "@echo off\r\necho batch-output\r\nstart \"\" /b \"F1_25.exe\" /d /c \"ping -n 3 127.0.0.1 >nul\"\r\n",
++    );
++    let cmd = std::env::var_os("COMSPEC").unwrap();
++    std::fs::copy(cmd, f.game.join(GAME_EXE)).unwrap();
++    let game = f.install_mod();
++    let session = Session {
++        store: &f.store,
++        game: &game,
++        request_id: "custom".into(),
++        _lock: SessionLock::try_acquire(&f.store.root).unwrap().unwrap(),
++    };
++    let start = Instant::now();
++    let env = std::env::vars().collect();
++    let result = wait_custom_batch_for(
++        &f.store,
++        &f.game,
++        &f.batch,
++        &f.session,
++        &[],
++        &env,
++        &mut || {
++            assert_eq!(
++                std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
++                "modded"
++            )
++        },
++        Duration::from_secs(5),
++    );
++    finish(session, result.map(|_| ExitCode::SUCCESS)).unwrap();
++    assert_eq!(
++        std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
++        "original"
++    );
++    assert!(start.elapsed() >= Duration::from_secs(1));
++    assert!(!game_running_in(&f.game));
++    assert!(
++        std::fs::read_to_string(f.session.join("custom_batch.log"))
++            .unwrap()
++            .contains("batch-output")
++    );
++}
++
++#[test]
++fn unsuccessful_batch_reports_failure_before_the_startup_timeout() {
++    let f = Fixture::new("@exit /b 7\r\n");
++    std::fs::write(f.game.join(GAME_EXE), "fixture").unwrap();
++    let game = f.install_mod();
++    let session = Session {
++        store: &f.store,
++        game: &game,
++        request_id: "custom-failure".into(),
++        _lock: SessionLock::try_acquire(&f.store.root).unwrap().unwrap(),
++    };
++    let start = Instant::now();
++    assert!(
++        finish(session, f.run().map(|_| ExitCode::SUCCESS))
++            .unwrap_err()
++            .to_string()
++            .contains("did not start F1 25")
++    );
++    assert_eq!(
++        std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
++        "original"
++    );
++    assert!(start.elapsed() < Duration::from_secs(5));
++}
++
++#[test]
++fn successful_batch_without_a_game_times_out() {
++    let f = Fixture::new("@exit /b 0\r\n");
++    let env = std::env::vars().collect();
++    let result = wait_custom_batch_for(
++        &f.store,
++        &f.game,
++        &f.batch,
++        &f.session,
++        &[],
++        &env,
++        &mut || {},
++        Duration::from_millis(300),
++    );
++    assert!(result.unwrap_err().to_string().contains("did not start F1 25"));
++}
++
++#[test]
++fn missing_batch_is_rejected_before_launch() {
++    let f = Fixture::new("@exit /b 0\r\n");
++    let mut config = f.store.config();
++    config
++        .launch
++        .custom_batches
++        .insert(f.game.clone(), f.batch.clone());
++    f.store.save_config(&config).unwrap();
++    std::fs::write(f.game.join(GAME_EXE), "fixture").unwrap();
++    std::fs::remove_file(&f.batch).unwrap();
++    assert!(custom_batch(&f.store, &f.game).is_err());
++}
++
++#[test]
++fn timeout_delay_works_in_the_hidden_batch_console() {
++    let f = Fixture::new(
++        "@echo off\r\n\"%SystemRoot%\\System32\\timeout.exe\" /t 2 /nobreak >nul\r\nstart \"\" /b \"F1_25.exe\" /d /c \"ping -n 3 127.0.0.1 >nul\"\r\n",
++    );
++    std::fs::copy(std::env::var_os("COMSPEC").unwrap(), f.game.join(GAME_EXE)).unwrap();
++    let start = Instant::now();
++    f.run().unwrap();
++    assert!(start.elapsed() >= Duration::from_secs(3));
++    let log = std::fs::read_to_string(f.session.join("custom_batch.log")).unwrap();
++    assert!(!log.contains("Input redirection is not supported"), "{log}");
++}
++
++#[test]
++fn interrupted_session_keeps_mods_until_game_exit_and_can_be_recovered() {
++    let f = Fixture::new("@start \"\" /b \"F1_25.exe\" /d /c \"ping -n 3 127.0.0.1 >nul\"\r\n");
++    std::fs::copy(std::env::var_os("COMSPEC").unwrap(), f.game.join(GAME_EXE)).unwrap();
++    let game = f.install_mod();
++    let mut session = Some(Session {
++        store: &f.store,
++        game: &game,
++        request_id: "interrupted-custom".into(),
++        _lock: SessionLock::try_acquire(&f.store.root).unwrap().unwrap(),
++    });
++    let env = std::env::vars().collect();
++    wait_custom_batch_for(
++        &f.store,
++        &f.game,
++        &f.batch,
++        &f.session,
++        &[],
++        &env,
++        &mut || {
++            if game_running_in(&f.game) {
++                drop(session.take());
++            }
++            assert_eq!(
++                std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
++                "modded"
++            );
++        },
++        Duration::from_secs(5),
++    )
++    .unwrap();
++    assert!(session.is_none());
++    assert!(
++        !swofty_core::journal::Journal::open(&f.store.root)
++            .unwrap()
++            .is_empty()
++    );
++    let lock = SessionLock::try_acquire(&f.store.root).unwrap().unwrap();
++    crate::recover::stale(&f.store, &lock, &game, Scope::All, &info).unwrap();
++    assert_eq!(
++        std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
++        "original"
++    );
++}
