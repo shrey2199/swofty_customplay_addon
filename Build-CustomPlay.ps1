@@ -9,6 +9,7 @@ param(
     [string] $SourceRepository = 'https://github.com/Swofty-Developments/SwoftyLauncher.git',
     [string] $ReleaseZip,
     [string] $RustToolchain,
+    [switch] $AddonOnly,
     [switch] $CheckPatch
 )
 
@@ -176,8 +177,12 @@ try {
         cli_version = $label
     }
     $info | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $bundle 'BUILD_INFO.json') -Encoding utf8
-    $runnerZip = Join-Path $staging "custom-play-runner-$addonTag-windows-x64.zip"
-    [IO.Compression.ZipFile]::CreateFromDirectory($bundle, $runnerZip)
+    $packages = @()
+    if (!$AddonOnly) {
+        $runnerZip = Join-Path $staging "custom-play-runner-$addonTag-windows-x64.zip"
+        [IO.Compression.ZipFile]::CreateFromDirectory($bundle, $runnerZip)
+        $packages += $runnerZip
+    }
 
     Copy-Item -LiteralPath (Join-Path $binaries 'custom-play-helper.exe') -Destination $bin
     $manifest = Get-Content -LiteralPath (Join-Path $addonSource 'swofty.json') -Raw | ConvertFrom-Json
@@ -186,7 +191,8 @@ try {
     $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundle 'swofty.json') -Encoding utf8
     $addonZip = Join-Path $staging "local.custom-play-$($addonTag.Substring(1))-windows-x64.swoftyaddon"
     [IO.Compression.ZipFile]::CreateFromDirectory($bundle, $addonZip)
-    Get-FileHash -LiteralPath $runnerZip, $addonZip -Algorithm SHA256 | ForEach-Object {
+    $packages += $addonZip
+    Get-FileHash -LiteralPath $packages -Algorithm SHA256 | ForEach-Object {
         '{0}  {1}' -f $_.Hash.ToLowerInvariant(), [IO.Path]::GetFileName($_.Path)
     } | Set-Content -LiteralPath (Join-Path $staging 'SHA256SUMS') -Encoding ascii
 

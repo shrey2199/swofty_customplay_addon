@@ -5,7 +5,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -225,9 +225,7 @@ impl Updates {
             self.worker = None;
             changed = true;
         }
-        let status = fs::read(self.dir.join("status.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let status = read_status(&self.dir.join("status.json"), SystemTime::now());
         if self.last_status != status {
             self.last_status = status;
             changed = true;
@@ -352,6 +350,18 @@ struct Status {
     working: bool,
     #[serde(default)]
     percent: Option<u8>,
+}
+
+fn read_status(path: &Path, now: SystemTime) -> Option<Status> {
+    let file = File::open(path).ok()?;
+    let status: Status = serde_json::from_reader(&file).ok()?;
+    if status.tone == "good" && !status.working {
+        let modified = file.metadata().ok()?.modified().ok()?;
+        if now.duration_since(modified).ok()? >= Duration::from_secs(15) {
+            return None;
+        }
+    }
+    Some(status)
 }
 
 fn status(dir: &Path, tone: &str, text: &str, working: bool) -> Result<()> {
@@ -652,6 +662,31 @@ pub fn apply(request_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_status_expires_from_its_write_time() {
+        let path = std::env::temp_dir().join(format!("custom-play-status-{}.json", std::process::id()));
+        let mut file = File::create_new(&path).unwrap();
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        file.write_all(br#"{"tone":"good","text":"Installed","working":false}"#)
+            .unwrap();
+        file.set_modified(modified).unwrap();
+        drop(file);
+        assert!(read_status(&path, modified + Duration::from_secs(14)).is_some());
+        assert!(read_status(&path, modified + Duration::from_secs(15)).is_none());
+
+        for content in [
+            br#"{"tone":"warn","text":"Failed","working":false}"#.as_slice(),
+            br#"{"tone":"accent","text":"Downloading","working":true,"percent":50}"#.as_slice(),
+        ] {
+            let mut file = File::create(&path).unwrap();
+            file.write_all(content).unwrap();
+            file.set_modified(modified).unwrap();
+            drop(file);
+            assert!(read_status(&path, modified + Duration::from_secs(60)).is_some());
+        }
+        fs::remove_file(path).unwrap();
+    }
 
     fn release(tag: &str) -> Release {
         let build = Build::from_tag(tag).unwrap();

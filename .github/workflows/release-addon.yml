@@ -1,0 +1,28 @@
+name: Release Custom Play addon
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: ${{ !github.event.deleted && startsWith(github.event.head_commit.message, 'releasecommit:') }}
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    concurrency:
+      group: custom-play-release
+      queue: max
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build and publish addon
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/Publish-CustomPlay.ps1
