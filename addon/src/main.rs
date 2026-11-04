@@ -191,7 +191,7 @@ impl Addon {
             }
             self.updates.start(&self.launcher_data)?;
             return Ok(
-                json!({"notice":"Preparing the Custom Play update. Leave Swofty open until the download finishes."}),
+                json!({"notice":"Preparing the Custom Play update. Swofty will restart when the download is verified."}),
             );
         }
         let game = self

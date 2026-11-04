@@ -33,7 +33,7 @@ pwsh -NoProfile -File ./Build-CustomPlay.ps1 -Tag v1.8.6 -AddonPatch 1
 
 Publish `dist/v1.8.6_patch1/local.custom-play-1.8.6_patch1-windows-x64.swoftyaddon` on the `v1.8.6_patch1` tag in [the Custom Play repository](https://github.com/shrey2199/swofty_customplay_addon/releases). Keep the generated asset name and enter the changes in the GitHub release description. Use `v1.8.6_patch2` for the next addon-only update, or the plain upstream version tag when moving to a newer Swofty release. The addon manifest uses a valid SemVer version such as `1.8.6+patch.1`.
 
-Install the first updater-enabled build manually. The sidebar then checks GitHub in the background and shows the available release's notes under **What's New**. **Update Custom Play** downloads and verifies the package. Once prompted, close Swofty and the updater will install the package and reopen the launcher. A newer launcher version or an available update leaves **Play Custom** enabled. The update log is saved as `updates/update.log` in Custom Play's addon data folder.
+Install the first updater-enabled build manually. The sidebar then checks GitHub in the background and shows the available release's notes under **What's New**. **Update Custom Play** shows download progress, verifies the package, and restarts Swofty to install it. If Swofty can't close automatically, the sidebar asks you to close it. A newer launcher version or an available update leaves **Play Custom** enabled. The update log is saved as `updates/update.log` in Custom Play's addon data folder.
 
 ## Check or rebuild a release
 

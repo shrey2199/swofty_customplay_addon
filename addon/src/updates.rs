@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read};
-use std::os::windows::io::{FromRawHandle, OwnedHandle};
+use std::io::{self, Read, Write};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -11,13 +11,16 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{HWND, INVALID_HANDLE_VALUE, LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, QueryFullProcessImageNameW,
     WaitForSingleObject,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
 };
 
 use crate::Result;
@@ -256,6 +259,15 @@ impl Updates {
                 "tone": if interrupted { "warn" } else { &status.tone },
                 "text": if interrupted { "The previous update was interrupted. You can try again." } else { &status.text }
             }));
+            if status.working
+                && !interrupted
+                && let Some(percent) = status.percent
+            {
+                blocks.push(json!({"meters":[{
+                    "label":"Custom Play update", "value":percent, "max":100,
+                    "text":format!("{percent}%"), "tone":"accent"
+                }]}));
+            }
         }
         if let Some(update) = &self.available {
             let compatible = update.build.base <= *launcher;
@@ -307,6 +319,7 @@ impl Updates {
         fs::copy(std::env::current_exe()?, &worker)?;
         let request = Request {
             pid,
+            helper_pid: std::process::id(),
             launcher: launcher_exe,
             data: data.to_owned(),
             tag: update.build.tag(),
@@ -319,6 +332,9 @@ impl Updates {
             Command::new(worker)
                 .arg("--apply-update")
                 .arg(request_path)
+                // Swofty starts helpers inside the installed addon. Inheriting that directory
+                // keeps it in use on Windows even after the launcher and helper have exited.
+                .current_dir(&self.dir)
                 .creation_flags(0x08000000)
                 .stdin(Stdio::null())
                 .stdout(log.try_clone()?)
@@ -334,9 +350,19 @@ struct Status {
     tone: String,
     text: String,
     working: bool,
+    #[serde(default)]
+    percent: Option<u8>,
 }
 
 fn status(dir: &Path, tone: &str, text: &str, working: bool) -> Result<()> {
+    write_status(dir, tone, text, working, None)
+}
+
+fn progress(dir: &Path, text: &str, percent: u8) -> Result<()> {
+    write_status(dir, "accent", text, true, Some(percent))
+}
+
+fn write_status(dir: &Path, tone: &str, text: &str, working: bool, percent: Option<u8>) -> Result<()> {
     let temp = dir.join("status.tmp");
     fs::write(
         &temp,
@@ -344,6 +370,7 @@ fn status(dir: &Path, tone: &str, text: &str, working: bool) -> Result<()> {
             tone: tone.into(),
             text: text.into(),
             working,
+            percent,
         })?,
     )?;
     fs::rename(temp, dir.join("status.json"))?;
@@ -353,6 +380,7 @@ fn status(dir: &Path, tone: &str, text: &str, working: bool) -> Result<()> {
 #[derive(Deserialize, Serialize)]
 struct Request {
     pid: u32,
+    helper_pid: u32,
     launcher: PathBuf,
     data: PathBuf,
     tag: String,
@@ -415,6 +443,40 @@ fn open_lock(path: &Path, create: bool) -> io::Result<File> {
         .open(path)
 }
 
+fn wait_for_exit(process: &OwnedHandle, timeout_ms: u32) -> io::Result<bool> {
+    // SAFETY: process owns the handle for the duration of the wait.
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), timeout_ms) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+fn close_launcher(pid: u32) -> io::Result<bool> {
+    struct Close {
+        pid: u32,
+        posted: bool,
+    }
+    unsafe extern "system" fn close_window(window: HWND, param: LPARAM) -> i32 {
+        // SAFETY: EnumWindows invokes this callback synchronously with a pointer to Close.
+        unsafe {
+            let close = &mut *(param as *mut Close);
+            let mut owner = 0;
+            GetWindowThreadProcessId(window, &mut owner);
+            if owner == close.pid && IsWindowVisible(window) != 0 {
+                close.posted |= PostMessageW(window, WM_CLOSE, 0, 0) != 0;
+            }
+        }
+        1
+    }
+    let mut close = Close { pid, posted: false };
+    // SAFETY: close outlives the synchronous enumeration.
+    if unsafe { EnumWindows(Some(close_window), (&mut close as *mut Close) as LPARAM) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(close.posted)
+}
+
 fn download(request: &Request, build: &Build, package: &Path) -> Result<()> {
     if !request.asset.valid_for(build) {
         return Err("The GitHub asset does not match this update".into());
@@ -429,18 +491,47 @@ fn download(request: &Request, build: &Build, package: &Path) -> Result<()> {
         .header("User-Agent", "Swofty-Custom-Play")
         .call()?;
     let mut file = File::create(package)?;
-    let bytes = io::copy(
-        &mut response
-            .body_mut()
-            .with_config()
-            .limit(request.asset.size + 1)
-            .reader(),
-        &mut file,
-    )?;
+    let mut reader = response
+        .body_mut()
+        .with_config()
+        .limit(request.asset.size + 1)
+        .reader();
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 32 * 1024];
+    let mut bytes = 0;
+    let mut last_percent = 0;
+    let mut reported = Instant::now();
+    loop {
+        let len = reader.read(&mut buffer)?;
+        if len == 0 {
+            break;
+        }
+        file.write_all(&buffer[..len])?;
+        digest.update(&buffer[..len]);
+        bytes += len as u64;
+        let percent = (bytes * 100 / request.asset.size).min(100) as u8;
+        if percent != last_percent && reported.elapsed() >= Duration::from_millis(150) {
+            progress(
+                package.parent().unwrap(),
+                "Downloading the Custom Play update…",
+                percent,
+            )?;
+            last_percent = percent;
+            reported = Instant::now();
+        }
+    }
     drop(file);
-    if bytes != request.asset.size
-        || !package_hash(package)?.eq_ignore_ascii_case(request.asset.hash().unwrap())
-    {
+    progress(
+        package.parent().unwrap(),
+        "Verifying the Custom Play update…",
+        100,
+    )?;
+    let hash: String = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if bytes != request.asset.size || !hash.eq_ignore_ascii_case(request.asset.hash().unwrap()) {
         return Err("The downloaded addon failed its SHA-256 check".into());
     }
     let mut zip = zip::ZipArchive::new(File::open(package)?)?;
@@ -458,26 +549,7 @@ fn download(request: &Request, build: &Build, package: &Path) -> Result<()> {
     Ok(())
 }
 
-fn package_hash(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 32 * 1024];
-    loop {
-        let len = file.read(&mut buffer)?;
-        if len == 0 {
-            break;
-        }
-        digest.update(&buffer[..len]);
-    }
-    Ok(digest
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
-
 pub fn apply(request_path: &Path) -> Result<()> {
-    use std::os::windows::io::AsRawHandle;
     let dir = request_path.parent().ok_or("No update folder")?;
     let worker_lock = open_lock(&dir.join("worker.lock"), true)?;
     worker_lock.try_lock()?;
@@ -490,47 +562,49 @@ pub fn apply(request_path: &Path) -> Result<()> {
         if launcher != request.launcher {
             return Err("Swofty Launcher changed while preparing the update".into());
         }
+        // SAFETY: request names the helper that started this worker. We only wait on its handle.
+        let helper = unsafe {
+            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, request.helper_pid);
+            if handle.is_null() {
+                return Err(io::Error::last_os_error().into());
+            }
+            OwnedHandle::from_raw_handle(handle)
+        };
         let cli = launcher.with_file_name("swofty.exe");
         if !cli.is_file() {
             return Err("The official swofty.exe is missing beside the launcher".into());
         }
-        status(
-            dir,
-            "accent",
-            "Downloading and verifying the Custom Play update…",
-            true,
-        )?;
+        progress(dir, "Downloading the Custom Play update…", 0)?;
         download(&request, &build, &package)?;
-        status(
-            dir,
-            "accent",
-            "Close Swofty to install the update. It will reopen when finished.",
-            true,
-        )?;
-        // SAFETY: handle remains valid throughout the wait.
-        match unsafe { WaitForSingleObject(handle.as_raw_handle(), 15 * 60 * 1000) } {
-            WAIT_OBJECT_0 => reopen = true,
-            WAIT_TIMEOUT => {
-                return Err("Close Swofty within 15 minutes of starting the update, then try again".into());
-            }
-            _ => return Err(io::Error::last_os_error().into()),
-        }
         let lock_path = request.data.join("state/session.lock");
         fs::create_dir_all(lock_path.parent().unwrap())?;
         let session = open_lock(&lock_path, true)?;
-        let start = Instant::now();
-        loop {
-            match session.try_lock() {
-                Ok(()) => break,
-                Err(TryLockError::WouldBlock) if start.elapsed() < Duration::from_secs(60) => {
-                    thread::sleep(Duration::from_millis(500))
-                }
-                Err(TryLockError::WouldBlock) => {
-                    return Err("Finish your game session before updating Custom Play".into());
-                }
-                Err(error) => return Err(error.into()),
+        match session.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                return Err("Finish your game session before updating Custom Play".into());
+            }
+            Err(error) => return Err(error.into()),
+        }
+        progress(dir, "Restarting Swofty to install the Custom Play update…", 100)?;
+        if !wait_for_exit(&handle, 0)? && !(close_launcher(request.pid)? && wait_for_exit(&handle, 15_000)?) {
+            progress(
+                dir,
+                "Close Swofty to finish the update. It will reopen when finished.",
+                100,
+            )?;
+            if !wait_for_exit(&handle, 90_000)? {
+                return Err("Swofty did not close. Close its other windows and retry the update.".into());
             }
         }
+        reopen = true;
+        if !wait_for_exit(&helper, 15_000)? {
+            return Err(
+                "The previous Custom Play helper is still running. Close other Swofty windows and retry."
+                    .into(),
+            );
+        }
+        progress(dir, "Installing the Custom Play update…", 100)?;
         let current = installed_build(&request.data.join("addons").join(ADDON))
             .ok_or("Could not read the installed Custom Play version")?;
         if build <= current {
@@ -542,6 +616,7 @@ pub fn apply(request_path: &Path) -> Result<()> {
             );
         }
         let output = Command::new(cli)
+            .current_dir(dir)
             .arg("--data-dir")
             .arg(&request.data)
             .args(["addons", "install"])
