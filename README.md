@@ -1,6 +1,6 @@
 # Custom Play builder for Swofty Launcher
 
-Builds the Windows x64 Custom Play addon and its patched `swofty.exe` from a tagged [Swofty Launcher release](https://github.com/Swofty-Developments/SwoftyLauncher/releases). The addon uses the game folder and profile selected in the official launcher and starts the batch file you select for that folder.
+Builds the Windows x64 Custom Play addon and its patched `swofty.exe` from a tagged [Swofty Launcher release](https://github.com/Swofty-Developments/SwoftyLauncher/releases). The addon uses the game folder and profile selected in the official launcher and starts the `.bat` or `.exe` loader you select for that folder.
 
 ## Build on Windows
 
@@ -21,7 +21,7 @@ Successful builds go in `dist/<tag>/`.
 - `custom-play-runner-<tag>-windows-x64.zip` contains `bin/swofty.exe`, `loader/`, and `dxc/` for standalone use. Keep those folders together when extracting it.
 - `SHA256SUMS` covers both downloads. `BUILD_INFO.json` inside each package records the upstream commit and the hashes of the patch and original Windows ZIP.
 
-Drag the `.swoftyaddon` into the matching official launcher, enable **Custom Play** for your profile, and open **Custom Play** in the sidebar. Choose your `.bat` and click **Play Custom**. The batch runs from the selected game folder. **Open launch log** shows the session output.
+Drag the `.swoftyaddon` into the matching official launcher, enable **Custom Play** for your profile, and open **Custom Play** in the sidebar. Choose your `.bat` or `.exe` under **Loader file** and click **Play Custom**. The loader runs with the selected game folder as its working directory. **Open launch log** shows the session output.
 
 ## Publish and install addon updates
 
@@ -54,7 +54,7 @@ pwsh -NoProfile -File ./Build-CustomPlay.ps1 -Tag v1.8.6 `
 ## Repository contents
 
 - `Build-CustomPlay.ps1` is the manual build entry point.
-- `patches/custom-play-cli.patch` contains the changes to the CLI and shared launch configuration, including the Windows batch session tests.
+- `patches/custom-play-cli.patch` contains the changes to the CLI and shared launch configuration, including the Windows custom loader session tests.
 - `addon/` contains the helper source, its Cargo lockfile, and the addon manifest template.
 
 This folder is the repository root. Git ignores downloaded sources, build intermediates, and generated packages. The generated packages include upstream third-party notices.
