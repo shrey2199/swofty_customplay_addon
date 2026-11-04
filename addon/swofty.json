@@ -3,7 +3,7 @@
   "id": "local.custom-play",
   "name": "Custom Play",
   "version": "0.1.0",
-  "author": "Local Custom Play",
+  "author": "Shrey2199",
   "description": "Launch your selected F1 25 profile with a .bat or .exe loader file.",
   "license": "AGPL-3.0-or-later",
   "compat": { "game": "f1_25", "launcher": ">=1.8.4" },
