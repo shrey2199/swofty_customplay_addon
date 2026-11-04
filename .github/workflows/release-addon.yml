@@ -3,13 +3,37 @@ name: Release Custom Play addon
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  check:
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-24.04
+    outputs:
+      upstream_tag: ${{ steps.detect.outputs.upstream_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check for a new stable Swofty release
+        id: detect
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/Publish-CustomPlay.ps1 -Mode CheckUpstream
+
   release:
-    if: ${{ !github.event.deleted && startsWith(github.event.head_commit.message, 'releasecommit:') }}
+    needs: check
+    if: >-
+      ${{ !cancelled() &&
+          ((github.event_name == 'push' && !github.event.deleted && startsWith(github.event.head_commit.message, 'releasecommit:')) ||
+           (needs.check.result == 'success' && needs.check.outputs.upstream_tag != '')) }}
     runs-on: windows-2025
     permissions:
       contents: write
@@ -25,4 +49,5 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./.github/Publish-CustomPlay.ps1
+          RELEASE_MODE: ${{ github.event_name == 'push' && 'Commit' || 'Upstream' }}
+        run: ./.github/Publish-CustomPlay.ps1 -Mode $env:RELEASE_MODE

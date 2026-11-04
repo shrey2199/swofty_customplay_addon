@@ -1,4 +1,10 @@
 #Requires -Version 7.2
+[CmdletBinding()]
+param(
+    [ValidateSet('Commit', 'CheckUpstream', 'Upstream')]
+    [string] $Mode = 'Commit'
+)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -15,14 +21,33 @@ function Get-GitHubItems([string] $Endpoint) {
     }
 }
 
-function Get-ReleasePlan([string] $UpstreamTag, [string] $Commit, [object[]] $Releases, [object[]] $Tags) {
-    $addonPattern = '^v[0-9]+\.[0-9]+\.[0-9]+(?:_patch[1-9][0-9]*)?$'
-    $basePattern = '^' + [regex]::Escape($UpstreamTag) + '(?:_patch(?<patch>[1-9][0-9]*))?$'
+function Get-BaseTagPattern([string] $UpstreamTag) {
+    '^' + [regex]::Escape($UpstreamTag) + '(?:_patch(?<patch>[1-9][0-9]*))?$'
+}
+
+function Get-AddonAssetName([string] $Tag) {
+    "local.custom-play-$($Tag.Substring(1))-windows-x64.swoftyaddon"
+}
+
+function Get-PublishedAddonReleases([string] $UpstreamTag, [object[]] $Releases) {
+    $pattern = Get-BaseTagPattern $UpstreamTag
+    foreach ($release in $Releases) {
+        if ($release.draft -or $release.prerelease -or $release.tag_name -cnotmatch $pattern) { continue }
+        $name = Get-AddonAssetName $release.tag_name
+        $asset = $release.assets | Where-Object {
+            $_.name -ceq $name -and $_.size -gt 0 -and $_.size -le 256MB -and
+            $_.digest -cmatch '^sha256:[0-9A-Fa-f]{64}$'
+        } | Select-Object -First 1
+        if ($asset) { $release }
+    }
+}
+
+function Get-ReleasePlan([string] $UpstreamTag, [string] $Commit, [object[]] $Releases, [object[]] $Tags, [object[]] $Published) {
+    $basePattern = Get-BaseTagPattern $UpstreamTag
     $tagCommits = @{}
     foreach ($tag in $Tags) { $tagCommits[$tag.name] = $tag.commit.sha }
-    foreach ($release in $Releases) {
-        if (!$release.draft -and !$release.prerelease -and $release.tag_name -cmatch $addonPattern -and
-            $tagCommits[$release.tag_name] -eq $Commit) {
+    foreach ($release in $Published) {
+        if ($tagCommits[$release.tag_name] -eq $Commit) {
             return @{ Published = $release.tag_name }
         }
     }
@@ -47,12 +72,16 @@ function Get-ReleasePlan([string] $UpstreamTag, [string] $Commit, [object[]] $Re
 }
 
 $commit = $env:GITHUB_SHA
-$message = (& git log -1 --format=%B $commit) -join "`n"
-if ($LASTEXITCODE -ne 0) { throw "Could not read commit $commit." }
-$prefix = 'releasecommit:'
-if (!$message.StartsWith($prefix, [StringComparison]::Ordinal)) {
-    Write-Host 'The tip commit does not have the exact release prefix.'
-    return
+$notes = ''
+if ($Mode -eq 'Commit') {
+    $message = (& git log -1 --format=%B $commit) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw "Could not read commit $commit." }
+    $prefix = 'releasecommit:'
+    if (!$message.StartsWith($prefix, [StringComparison]::Ordinal)) {
+        Write-Host 'The tip commit does not have the exact release prefix.'
+        return
+    }
+    $notes = $message.Substring($prefix.Length).Trim()
 }
 
 $upstream = Invoke-Gh @('api', 'repos/Swofty-Developments/SwoftyLauncher/releases/latest') | ConvertFrom-Json
@@ -61,7 +90,19 @@ if ($upstream.draft -or $upstream.prerelease -or $upstreamTag -cnotmatch '^v[0-9
     throw "Expected a stable upstream version, got $upstreamTag."
 }
 $repo = "repos/$env:GITHUB_REPOSITORY"
-$plan = Get-ReleasePlan $upstreamTag $commit @(Get-GitHubItems "$repo/releases") @(Get-GitHubItems "$repo/tags")
+$releases = @(Get-GitHubItems "$repo/releases")
+$covered = @(Get-PublishedAddonReleases $upstreamTag $releases)
+if ($Mode -ne 'Commit' -and $covered.Count -gt 0) {
+    Write-Host "Swofty $upstreamTag already has a published Custom Play addon."
+    return
+}
+if ($Mode -eq 'CheckUpstream') {
+    Write-Host "Swofty $upstreamTag needs a Custom Play build."
+    Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "upstream_tag=$upstreamTag" -Encoding utf8
+    return
+}
+
+$plan = Get-ReleasePlan $upstreamTag $commit $releases @(Get-GitHubItems "$repo/tags") $covered
 if ($plan['Published']) {
     Write-Host "Commit $commit already has release $($plan.Published)."
     return
@@ -85,11 +126,13 @@ try {
         $env:GH_TOKEN = $oldToken
     }
 
-    $name = "local.custom-play-$($tag.Substring(1))-windows-x64.swoftyaddon"
+    $name = Get-AddonAssetName $tag
     $asset = Join-Path $output "$tag/$name"
     $digest = 'sha256:' + (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
     $notesFile = Join-Path $scratch 'notes.md'
-    $notes = $message.Substring($prefix.Length).Trim()
+    if ($Mode -eq 'Upstream') {
+        $notes = "Built for [Swofty Launcher $upstreamTag](https://github.com/Swofty-Developments/SwoftyLauncher/releases/tag/$upstreamTag)."
+    }
     if (!$notes) { $notes = "Custom Play $tag for Swofty Launcher $upstreamTag." }
     Set-Content -LiteralPath $notesFile -Value $notes -Encoding utf8
 

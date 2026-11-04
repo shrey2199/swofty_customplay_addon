@@ -25,7 +25,9 @@ Drag the `.swoftyaddon` into the matching official launcher, enable **Custom Pla
 
 ## Publish and install addon updates
 
-GitHub Actions publishes a release when the newest commit pushed to `main` starts with `releasecommit:`. For example, `releasecommit: Fix the update notice` uses “Fix the update notice” as the release notes. A commit body is included too. The job selects the latest stable Swofty version, assigns the next addon tag, and attaches only the `.swoftyaddon` to the release. Build data is temporary on the hosted Windows runner.
+GitHub Actions checks hourly for the latest stable Swofty release and builds the addon when that Swofty version has no published Custom Play package. Use **Actions → Release Custom Play addon → Run workflow** on `main` to check immediately. If GitHub disables scheduled runs after 60 days of public repository inactivity, re-enable the workflow from the Actions tab.
+
+To publish an addon-only patch, push a commit to `main` that starts with `releasecommit:`. For example, `releasecommit: Fix the update notice` uses “Fix the update notice” and any commit body as the release notes. Both paths share the same release queue, attach only the `.swoftyaddon`, and clean up the temporary Windows build data.
 
 For a manual addon-only build on a specific Swofty release, use `-Tag` and `-AddonPatch`.
 
