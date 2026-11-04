@@ -6,6 +6,8 @@ use std::process::{Child, Command, Stdio};
 
 use serde_json::{Value, json};
 
+mod updates;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct Host<R, W> {
@@ -51,6 +53,7 @@ struct Addon {
     profile: String,
     child: Option<Child>,
     status: Option<(String, &'static str)>,
+    updates: updates::Updates,
 }
 
 impl Addon {
@@ -95,6 +98,7 @@ impl Addon {
 
     fn view<R: BufRead, W: Write>(&mut self, host: &mut Host<R, W>) -> Result<Value> {
         self.observe_child()?;
+        self.updates.poll();
         let game = self.game(host)?;
         let batches = self.batches()?;
         let batch = game.as_ref().and_then(|g| batches.get(g));
@@ -110,21 +114,24 @@ impl Addon {
         if self.log_path().is_file() {
             actions.push(json!({"id":"log", "label":"Open launch log"}));
         }
-        let notices = self
+        let mut notices = self
             .status
             .iter()
             .map(|(text, tone)| json!({"text":text,"tone":tone}))
             .collect::<Vec<_>>();
+        let mut blocks = vec![json!({"facts": [
+            {"label":"Profile", "value":self.profile},
+            {"label":"Game folder", "value":game.map(|g|g.display().to_string()).unwrap_or_else(|| "Select a game folder in the launcher".into())},
+            {"label":"Batch file", "value":batch.map(|b|b.display().to_string()).unwrap_or_else(|| "Choose your .bat file".into())}
+        ]})];
+        self.updates
+            .view(self.child.is_some(), &mut actions, &mut notices, &mut blocks);
         Ok(json!({
             "subtitle": "Launch the active profile through a Windows batch file.",
             "actions": actions,
             "notices": notices,
             "tick": true,
-            "body": {"blocks": [{"facts": [
-                {"label":"Profile", "value":self.profile},
-                {"label":"Game folder", "value":game.map(|g|g.display().to_string()).unwrap_or_else(|| "Select a game folder in the launcher".into())},
-                {"label":"Batch file", "value":batch.map(|b|b.display().to_string()).unwrap_or_else(|| "Choose your .bat file".into())}
-            ]}]}
+            "body": {"blocks": blocks}
         }))
     }
 
@@ -177,6 +184,16 @@ impl Addon {
         if event["click"]["id"] == "log" {
             return Ok(json!({"open": self.log_path()}));
         }
+        if event["click"]["id"] == "update" {
+            self.observe_child()?;
+            if self.child.is_some() || host.call("game_status")?["running"] == true {
+                return Err("Finish the game session before updating Custom Play".into());
+            }
+            self.updates.start(&self.launcher_data)?;
+            return Ok(
+                json!({"notice":"Preparing the Custom Play update. Leave Swofty open until the download finishes."}),
+            );
+        }
         let game = self
             .game(host)?
             .ok_or("Select a game folder in the launcher first")?;
@@ -217,6 +234,7 @@ impl Addon {
                     .as_str()
                     .ok_or("No active profile")?
                     .into();
+                self.updates.init(params["launcher"].as_str(), &self.settings_dir);
                 Ok(json!({"api": 1}))
             }
             Some("profile") => {
@@ -226,7 +244,8 @@ impl Addon {
             Some("view") => self.view(host),
             Some("event") => self.event(host, &params["event"]),
             Some("tick") => {
-                if self.observe_child()? {
+                let updated = self.updates.poll();
+                if self.observe_child()? || updated {
                     host.send(json!({"method":"invalidate", "params":{"section":"play"}}))?;
                 }
                 Ok(Value::Null)
@@ -249,6 +268,11 @@ fn validate_batch(path: &Path) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == "--apply-update") {
+        let request = args.next().ok_or("Missing update request")?;
+        return updates::apply(Path::new(&request));
+    }
     let mut host = Host {
         input: io::stdin().lock(),
         output: io::stdout().lock(),

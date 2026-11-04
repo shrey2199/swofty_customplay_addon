@@ -3,6 +3,8 @@
 param(
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+$')]
     [string] $Tag,
+    [ValidateRange(1, 2147483647)]
+    [int] $AddonPatch,
     [string] $OutputDirectory = (Join-Path $PSScriptRoot 'dist'),
     [string] $SourceRepository = 'https://github.com/Swofty-Developments/SwoftyLauncher.git',
     [string] $ReleaseZip,
@@ -48,7 +50,13 @@ if (!$Tag) {
     }
 }
 $version = $Tag.Substring(1)
-$output = Join-Path $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory) $Tag
+$addonTag = $Tag
+$addonVersion = $version
+if ($AddonPatch) {
+    $addonTag = "${Tag}_patch$AddonPatch"
+    $addonVersion = "$version+patch.$AddonPatch"
+}
+$output = Join-Path $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory) $addonTag
 if (!$CheckPatch -and (Test-Path -LiteralPath $output)) {
     throw "Output already exists at $output. Choose another -OutputDirectory or move the old build."
 }
@@ -143,6 +151,7 @@ try {
     Push-Location $addonSource
     try {
         Write-Host 'Building the Custom Play addon helper'
+        Invoke-Checked cargo ($cargoArgs + @('test') + $buildArgs)
         Invoke-Checked cargo ($cargoArgs + @('build') + $buildArgs)
     } finally {
         Pop-Location
@@ -159,21 +168,23 @@ try {
     $info = [ordered]@{
         upstream_repository = $project
         upstream_tag = $Tag
+        addon_tag = $addonTag
+        addon_version = $addonVersion
         upstream_commit = $commit
         upstream_windows_zip_sha256 = $zipHash
         cli_patch_sha256 = (Get-FileHash -LiteralPath $patch -Algorithm SHA256).Hash.ToLowerInvariant()
         cli_version = $label
     }
     $info | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $bundle 'BUILD_INFO.json') -Encoding utf8
-    $runnerZip = Join-Path $staging "custom-play-runner-$Tag-windows-x64.zip"
+    $runnerZip = Join-Path $staging "custom-play-runner-$addonTag-windows-x64.zip"
     [IO.Compression.ZipFile]::CreateFromDirectory($bundle, $runnerZip)
 
     Copy-Item -LiteralPath (Join-Path $binaries 'custom-play-helper.exe') -Destination $bin
     $manifest = Get-Content -LiteralPath (Join-Path $addonSource 'swofty.json') -Raw | ConvertFrom-Json
-    $manifest.version = $version
+    $manifest.version = $addonVersion
     $manifest.compat.launcher = ">=$version"
     $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $bundle 'swofty.json') -Encoding utf8
-    $addonZip = Join-Path $staging "local.custom-play-$version-windows-x64.swoftyaddon"
+    $addonZip = Join-Path $staging "local.custom-play-$($addonTag.Substring(1))-windows-x64.swoftyaddon"
     [IO.Compression.ZipFile]::CreateFromDirectory($bundle, $addonZip)
     Get-FileHash -LiteralPath $runnerZip, $addonZip -Algorithm SHA256 | ForEach-Object {
         '{0}  {1}' -f $_.Hash.ToLowerInvariant(), [IO.Path]::GetFileName($_.Path)
