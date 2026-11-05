@@ -1,6 +1,25 @@
-# Custom Play builder for Swofty Launcher
+# Custom Play Addon
 
-Builds the Windows x64 Custom Play addon and its patched `swofty.exe` from a tagged [Swofty Launcher release](https://github.com/Swofty-Developments/SwoftyLauncher/releases). The addon uses the game folder and profile selected in the official launcher and starts the `.bat` or `.exe` loader you select for that folder.
+Custom Play adds an alternate way to launch F1 25 through the official Swofty Launcher. It uses the game folder and profile selected in the launcher, then starts a `.bat` or `.exe` loader you choose.
+
+## Install from Releases
+
+1. Open [Custom Play releases](https://github.com/shrey2199/swofty_customplay_addon/releases) and download the `.swoftyaddon` file from the latest release's **Assets** section.
+2. Install it by dragging the downloaded file onto Swofty Launcher, or open the launcher's **Addons** page and install the file there.
+3. Select your F1 25 game folder and the profile you want to use. On the **Addons** page, enable **Custom Play** for that profile.
+
+## Use the Addon
+
+1. Open **Custom Play** from the launcher's sidebar.
+2. Choose **Loader file** and select your `.bat` or `.exe` file which you use to open the game usually without mods. The loader runs with the selected F1 25 game folder as its working directory, so relative paths in the loader resolve from that folder.
+3. Click **Play Custom**. Custom Play prepares the selected profile's mods, starts your loader, and keeps the session active until F1 25 closes. The launcher then restores the game files.
+4. Use **Open launch log** on the Custom Play page to inspect the session output if needed.
+
+The addon updates separately from Swofty Launcher. When a Custom Play update is available, the page shows the release notes under **What's New** and offers **Update Custom Play**. The updater shows download progress and restarts Swofty to install the update. A launcher-version warning or available update does not disable **Play Custom**.
+
+## Building the Addon Yourself
+
+This repository builds the Windows x64 Custom Play addon and its patched `swofty.exe` from a tagged [Swofty Launcher release](https://github.com/Swofty-Developments/SwoftyLauncher/releases).
 
 ## Build on Windows
 
