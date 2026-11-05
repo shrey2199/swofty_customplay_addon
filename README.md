@@ -1,4 +1,4 @@
-# Custom Play Addon
+# Custom Play Addon for Swofty Launcher
 
 Custom Play adds an alternate way to launch F1 25 through the official Swofty Launcher. It uses the game folder and profile selected in the launcher, then starts a `.bat` or `.exe` loader you choose.
 
