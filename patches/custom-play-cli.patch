@@ -36,7 +36,7 @@ index 4efd0fc..7cce7e9 100644
  )]
  struct Cli {
 diff --git a/apps/cli/src/run.rs b/apps/cli/src/run.rs
-index e66809d..4d7e1ba 100644
+index c7dafa1..f800d54 100644
 --- a/apps/cli/src/run.rs
 +++ b/apps/cli/src/run.rs
 @@ -31,6 +31,11 @@ use crate::time::{now_secs, stamp};
@@ -170,7 +170,7 @@ index e66809d..4d7e1ba 100644
      let via_ea = ea.is_some();
 -    let (code, unread) = match ea {
 -        Some(started) => {
--            crate::ea::wait(game, &copies_before, started, tick);
+-            crate::ea::wait(game, &dir, &copies_before, started, tick);
 -            (None, EA_UNREAD.to_owned())
 -        }
 -        None => {
@@ -185,7 +185,7 @@ index e66809d..4d7e1ba 100644
 +    } else {
 +        match ea {
 +            Some(started) => {
-+                crate::ea::wait(game, &copies_before, started, tick);
++                crate::ea::wait(game, &dir, &copies_before, started, tick);
 +                (None, EA_UNREAD.to_owned())
 +            }
 +            None => {
@@ -195,7 +195,7 @@ index e66809d..4d7e1ba 100644
          }
      };
      if let Some(w) = watch.as_mut()
-@@ -1049,6 +1080,124 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
+@@ -1055,6 +1086,124 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
  const EA_UNREAD: &str =
      "the EA app started F1 25, so the session has no handle on the game to read its exit code";
  
@@ -320,7 +320,7 @@ index e66809d..4d7e1ba 100644
  /// Why an exit status carries no code.
  fn why_no_code(status: ExitStatus) -> String {
      #[cfg(unix)]
-@@ -1647,6 +1796,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
+@@ -1660,6 +1809,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
  }
  
  fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[String]) -> Result<Wrapper> {
@@ -328,7 +328,7 @@ index e66809d..4d7e1ba 100644
      let install = steam::find_game();
      let wrapped = install
          .as_ref()
-@@ -1657,7 +1807,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
+@@ -1670,7 +1820,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
                  .any(|(_, o)| steam::wrapper_installed(o))
          })
          .unwrap_or(false);
@@ -854,7 +854,7 @@ index 0000000..2c46203
 +#[cfg(windows)]
 +pub(super) use windows::spawn;
 diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
-index d3ea897..7824c41 100644
+index c1f3ff1..ce8d382 100644
 --- a/packages/core/src/lib.rs
 +++ b/packages/core/src/lib.rs
 @@ -1,5 +1,11 @@
@@ -870,10 +870,10 @@ index d3ea897..7824c41 100644
  pub mod addon_storage;
  pub mod app_control;
 diff --git a/packages/core/src/session.rs b/packages/core/src/session.rs
-index 4222173..0db9d1e 100644
+index 82c6c09..468a7f2 100644
 --- a/packages/core/src/session.rs
 +++ b/packages/core/src/session.rs
-@@ -196,6 +196,9 @@ pub fn game_args(steam_args: &[String], mode: LaunchMode) -> Vec<String> {
+@@ -212,6 +212,9 @@ pub fn game_args(steam_args: &[String], mode: LaunchMode) -> Vec<String> {
  
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
  pub struct LaunchConfig {
@@ -883,7 +883,7 @@ index 4222173..0db9d1e 100644
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub cpu_affinity: Option<String>,
      #[serde(default)]
-@@ -219,6 +222,7 @@ pub struct LaunchConfig {
+@@ -235,6 +238,7 @@ pub struct LaunchConfig {
  impl Default for LaunchConfig {
      fn default() -> Self {
          Self {
@@ -891,7 +891,7 @@ index 4222173..0db9d1e 100644
              cpu_affinity: None,
              env: BTreeMap::new(),
              winedebug: default_winedebug(),
-@@ -229,6 +233,34 @@ impl Default for LaunchConfig {
+@@ -245,6 +249,34 @@ impl Default for LaunchConfig {
      }
  }
  
