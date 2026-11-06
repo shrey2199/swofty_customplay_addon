@@ -120,12 +120,24 @@ impl Asset {
 #[derive(Debug)]
 struct Update {
     build: Build,
+    changelog: Vec<Change>,
+    asset: Asset,
+}
+
+struct PublishedBuild {
+    build: Build,
     notes: String,
     asset: Asset,
 }
 
+#[derive(Debug)]
+struct Change {
+    build: Build,
+    notes: String,
+}
+
 fn newest(releases: Vec<Release>, installed: &Build, launcher: &Version) -> Option<Update> {
-    releases
+    let builds: Vec<_> = releases
         .into_iter()
         .filter_map(|release| {
             if release.draft || release.prerelease {
@@ -140,9 +152,32 @@ fn newest(releases: Vec<Release>, installed: &Build, launcher: &Version) -> Opti
                 .chars()
                 .take(12_000)
                 .collect();
-            Some(Update { build, notes, asset })
+            Some(PublishedBuild {
+                build,
+                notes,
+                asset,
+            })
         })
-        .max_by(|a, b| (a.build.base <= *launcher, &a.build).cmp(&(b.build.base <= *launcher, &b.build)))
+        .collect();
+    let latest = builds.iter().max_by(|a, b| {
+        (a.build.base <= *launcher, &a.build).cmp(&(b.build.base <= *launcher, &b.build))
+    })?;
+    let build = latest.build.clone();
+    let asset = latest.asset.clone();
+    let mut changelog: Vec<_> = builds
+        .into_iter()
+        .filter(|published| published.build <= build)
+        .map(|published| Change {
+            build: published.build,
+            notes: published.notes,
+        })
+        .collect();
+    changelog.sort_by(|a, b| a.build.cmp(&b.build));
+    Some(Update {
+        build,
+        changelog,
+        asset,
+    })
 }
 
 fn agent() -> ureq::Agent {
@@ -280,12 +315,15 @@ impl Updates {
             };
             notices.push(json!({"tone":"accent", "text":text}));
             blocks.push(json!({"label":"What's New"}));
-            let notes = if update.notes.is_empty() {
-                "No release notes were provided."
-            } else {
-                &update.notes
-            };
-            blocks.push(json!({"text":{"text":notes,"tone":"neutral"}}));
+            for change in &update.changelog {
+                blocks.push(json!({"label":format!("Custom Play {}", change.build.tag())}));
+                let notes = if change.notes.is_empty() {
+                    "No release notes were provided."
+                } else {
+                    &change.notes
+                };
+                blocks.push(json!({"text":{"text":notes,"tone":"neutral"}}));
+            }
             if compatible && !session_running && !self.working() {
                 actions.push(json!({"id":"update", "label":"Update Custom Play"}));
             }
@@ -718,7 +756,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(update.build.tag(), "v1.8.6_patch10");
-        assert_eq!(update.notes, "Changes in v1.8.6_patch10");
+        assert_eq!(
+            update.changelog.last().unwrap().notes,
+            "Changes in v1.8.6_patch10"
+        );
         assert!(Build::from_tag("v1.8.6_patch02").is_none());
         assert!(Build::from_tag("v1.8.6_patch0").is_none());
     }
@@ -758,7 +799,8 @@ mod tests {
         assert_eq!(actions[1]["id"], "update");
         assert_eq!(notices[0]["tone"], "warn");
         assert_eq!(blocks[0]["label"], "What's New");
-        assert_eq!(blocks[1]["text"]["text"], "Changes in v1.8.6_patch1");
+        assert_eq!(blocks[1]["label"], "Custom Play v1.8.6_patch1");
+        assert_eq!(blocks[2]["text"]["text"], "Changes in v1.8.6_patch1");
         updates.available = newest(vec![release("v1.8.8")], &installed, &launcher);
         actions.truncate(1);
         updates.view(false, &mut actions, &mut notices, &mut blocks);
