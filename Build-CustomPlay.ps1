@@ -33,6 +33,34 @@ function Assert-File([string] $Path) {
     }
 }
 
+function Invoke-Download(
+    [string] $Uri,
+    [string] $Path,
+    [hashtable] $Headers = @{},
+    [int] $MaxAttempts = 5
+) {
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        try {
+            Invoke-WebRequest -Uri $Uri -OutFile $Path -Headers $Headers -TimeoutSec 300
+            return
+        } catch {
+            $status = $null
+            if ($_.Exception.Response) {
+                try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+            }
+            $retryable = $null -eq $status -or $status -in @(408, 429, 500, 502, 503, 504)
+            if (!$retryable -or $attempt -eq $MaxAttempts) {
+                throw
+            }
+            $delay = [Math]::Min(30, [int][Math]::Pow(2, $attempt))
+            $reason = if ($null -ne $status) { "HTTP $status" } else { $_.Exception.Message }
+            Write-Warning "Download failed ($reason), attempt $attempt of $MaxAttempts. Retrying in $delay seconds."
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 Get-Command git -CommandType Application | Out-Null
 if (!$CheckPatch) {
     if (!$IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
@@ -98,17 +126,25 @@ try {
     $expectedHash = $null
     if (!$ReleaseZip) {
         Write-Host "Downloading the official Windows package for $Tag"
-        $download = "$project/releases/download/$Tag"
+        $upstreamRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/Swofty-Developments/SwoftyLauncher/releases/tags/$Tag" -TimeoutSec 30
+        if ($upstreamRelease.tag_name -cne $Tag -or $upstreamRelease.draft -or $upstreamRelease.prerelease) {
+            throw "GitHub did not return the expected stable release $Tag."
+        }
+        $checksumAssets = @($upstreamRelease.assets | Where-Object name -CEQ 'SHA256SUMS')
+        $packageAssets = @($upstreamRelease.assets | Where-Object name -CEQ "$asset.zip")
+        if ($checksumAssets.Count -ne 1 -or $packageAssets.Count -ne 1) {
+            throw "Release $Tag must contain exactly one SHA256SUMS and one $asset.zip asset."
+        }
         $ReleaseZip = Join-Path $work "$asset.zip"
         $sums = Join-Path $work 'upstream-SHA256SUMS'
-        Invoke-WebRequest -Uri "$download/SHA256SUMS" -OutFile $sums
+        Invoke-Download -Uri $checksumAssets[0].url -Path $sums -Headers @{ Accept = 'application/octet-stream' }
         $pattern = '^([a-fA-F0-9]{64}) [ *]' + [regex]::Escape("$asset.zip") + '$'
         $expected = Select-String -LiteralPath $sums -Pattern $pattern
         if (!$expected -or @($expected).Count -ne 1) {
             throw "No unique checksum found for $asset.zip."
         }
         $expectedHash = $expected.Matches[0].Groups[1].Value
-        Invoke-WebRequest -Uri "$download/$asset.zip" -OutFile $ReleaseZip
+        Invoke-Download -Uri $packageAssets[0].url -Path $ReleaseZip -Headers @{ Accept = 'application/octet-stream' }
     }
     $zipHash = (Get-FileHash -LiteralPath $ReleaseZip -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($expectedHash -and $zipHash -ne $expectedHash) {
