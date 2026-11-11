@@ -129,8 +129,9 @@ index c7dafa1..f800d54 100644
      let version = swofty_core::exe_version::read(&g.dir.join(GAME_EXE));
      if let Some(d) = swofty_core::known_problems::outdated_exe(version.as_deref()) {
          say("warning", &format!("{}: {}", d.title, d.text()));
-@@ -480,7 +493,12 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
+@@ -480,8 +493,13 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi>
      let installed = apply.then(Instant::now);
+     let _home_menu = swofty_core::home_menu::publish(&store.root, &game, env!("CARGO_PKG_VERSION"));
      become_subreaper();
      let vanilla = store.profile(&profile).is_ok_and(|p| p.is_vanilla());
 -    if crate::ea::stages_offline(args.via_ea, vanilla) {
