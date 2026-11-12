@@ -336,8 +336,8 @@ index c7dafa1..f800d54 100644
 -    if crate::ea::store_start(Source::detect(game)) == crate::ea::StoreStart::EaApp {
 +    if !custom && crate::ea::store_start(Source::detect(game)) == crate::ea::StoreStart::EaApp {
          let mut c = Command::new(std::env::current_exe()?);
-         c.arg("--data-dir")
-             .arg(&store.root)
+         c.arg(flag("data-dir", &store.root))
+             .arg("run")
 diff --git a/apps/cli/src/run/custom_tests.rs b/apps/cli/src/run/custom_tests.rs
 new file mode 100644
 index 0000000..b66d3c0
