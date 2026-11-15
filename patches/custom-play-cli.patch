@@ -1,8 +1,8 @@
 diff --git a/apps/cli/src/build.rs b/apps/cli/src/build.rs
-index 872594b..23dfb70 100644
+index 26c7df1..ade8ac1 100644
 --- a/apps/cli/src/build.rs
 +++ b/apps/cli/src/build.rs
-@@ -370,14 +370,17 @@ fn install_checked(
+@@ -388,14 +388,17 @@ fn install_checked(
      out: &dyn Fn(&str),
      progress: &dyn Fn(usize, usize),
  ) -> Result<()> {
@@ -23,10 +23,10 @@ index 872594b..23dfb70 100644
          session,
          depot: depots.as_ref().map_or(&() as &dyn DepotHashes, |d| d),
 diff --git a/apps/cli/src/main.rs b/apps/cli/src/main.rs
-index 4efd0fc..7cce7e9 100644
+index c1e2965..3a61d99 100644
 --- a/apps/cli/src/main.rs
 +++ b/apps/cli/src/main.rs
-@@ -32,7 +32,7 @@ use swofty_core::store::Store;
+@@ -34,7 +34,7 @@ use swofty_core::store::Store;
  #[derive(Parser)]
  #[command(
      name = "swofty",
@@ -36,10 +36,10 @@ index 4efd0fc..7cce7e9 100644
  )]
  struct Cli {
 diff --git a/apps/cli/src/run.rs b/apps/cli/src/run.rs
-index c7dafa1..f800d54 100644
+index b22bf6a..cc66653 100644
 --- a/apps/cli/src/run.rs
 +++ b/apps/cli/src/run.rs
-@@ -31,6 +31,11 @@ use crate::time::{now_secs, stamp};
+@@ -32,6 +32,11 @@ use crate::time::{now_secs, stamp};
  
  const KB: &str = include_str!("../../../re/db/functions.tsv");
  
@@ -51,7 +51,7 @@ index c7dafa1..f800d54 100644
  #[derive(Args)]
  pub struct RunArgs {
      #[arg(long, default_value = DEFAULT_WINEDEBUG, help = "WINEDEBUG channels for the game process")]
-@@ -39,7 +44,7 @@ pub struct RunArgs {
+@@ -40,7 +45,7 @@ pub struct RunArgs {
      restart: bool,
      #[arg(
          long,
@@ -60,7 +60,7 @@ index c7dafa1..f800d54 100644
      )]
      direct: bool,
      #[arg(
-@@ -95,6 +100,7 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
+@@ -96,6 +101,7 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
          .clone()
          .or_else(|| wrapped.then(|| std::env::current_dir().ok()).flatten());
      let g = crate::build::game(store, explicit)?;
@@ -68,7 +68,7 @@ index c7dafa1..f800d54 100644
      if wrapped {
          return wrapper(store, profile, &args, &g).inspect_err(|e| note_blocked(store, e));
      }
-@@ -131,8 +137,10 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
+@@ -132,8 +138,10 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
      }
      // Modded sessions run without EA AntiCheat: the terms are accepted once,
      // and declining means the game is not launched.
@@ -81,7 +81,7 @@ index c7dafa1..f800d54 100644
          crate::setup::gate(store)?;
      }
      if let Some(state) = swofty_core::steam::find_game()
-@@ -141,15 +149,17 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
+@@ -142,15 +150,17 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
      {
          bail!("Steam is {state} F1 25; wait for it to finish, then press Play again");
      }
@@ -106,7 +106,7 @@ index c7dafa1..f800d54 100644
      }
      let id = format!("{:x}{:x}", std::process::id(), (now_secs() * 1e6) as u64);
      let request = LaunchRequest {
-@@ -384,6 +394,7 @@ pub fn logs(store: &Store, dir: Option<PathBuf>, exe: Option<PathBuf>) -> Result
+@@ -418,6 +428,7 @@ pub fn logs(store: &Store, dir: Option<PathBuf>, exe: Option<PathBuf>) -> Result
  }
  
  fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<ExitCode> {
@@ -114,7 +114,7 @@ index c7dafa1..f800d54 100644
      if let Some(running) = game_processes().first() {
          return Err(already_running(
              store,
-@@ -393,9 +404,11 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
+@@ -427,9 +438,11 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
      }
      let lock = crate::recover::lock(store, &info)?;
      crate::recover::stale(store, &lock, g, Scope::All, &info)?;
@@ -129,7 +129,9 @@ index c7dafa1..f800d54 100644
      let version = swofty_core::exe_version::read(&g.dir.join(GAME_EXE));
      if let Some(d) = swofty_core::known_problems::outdated_exe(version.as_deref()) {
          say("warning", &format!("{}: {}", d.title, d.text()));
-@@ -480,5 +493,10 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi>
+@@ -516,7 +529,12 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
+     );
+     become_subreaper();
      let vanilla = store.profile(&profile).is_ok_and(|p| p.is_vanilla());
 -    if crate::ea::stages_offline(args.via_ea, vanilla) {
 +    if custom.is_some() {
@@ -141,7 +143,7 @@ index c7dafa1..f800d54 100644
          stage_offline(store, &game)?;
      } else {
          say(
-@@ -582,6 +600,10 @@ struct Session<'a> {
+@@ -618,6 +636,10 @@ struct Session<'a> {
  
  impl Drop for Session<'_> {
      fn drop(&mut self) {
@@ -149,10 +151,10 @@ index c7dafa1..f800d54 100644
 +            info("F1 25 is still running; leaving the session journal for recovery after it closes");
 +            return;
 +        }
-         match swofty_core::offline::restore_pending(&self.store.root) {
-             Ok(true) => info("offline play: the game folder is back to vanilla"),
-             Ok(false) => {}
-@@ -949,7 +971,8 @@ fn play(
+         match swofty_core::offline::restore_pending(&self.store.root, &self.game.dir) {
+             Ok(Some(notes)) => {
+                 for note in notes {
+@@ -1033,7 +1055,8 @@ fn play(
              loader_missed(store, game, found.cause(game));
          }
      };
@@ -162,7 +164,7 @@ index c7dafa1..f800d54 100644
          true => Some(crate::ea::start(store, game, &extra, &dir, &copies_before)?),
          false => None,
      };
-@@ -973,14 +996,22 @@ fn play(
+@@ -1057,14 +1080,22 @@ fn play(
          }
      };
      let via_ea = ea.is_some();
@@ -193,7 +195,7 @@ index c7dafa1..f800d54 100644
          }
      };
      if let Some(w) = watch.as_mut()
-@@ -1055,6 +1086,124 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
+@@ -1140,6 +1171,124 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
  const EA_UNREAD: &str =
      "the EA app started F1 25, so the session has no handle on the game to read its exit code";
  
@@ -318,7 +320,7 @@ index c7dafa1..f800d54 100644
  /// Why an exit status carries no code.
  fn why_no_code(status: ExitStatus) -> String {
      #[cfg(unix)]
-@@ -1660,6 +1809,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
+@@ -1745,6 +1894,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
  }
  
  fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[String]) -> Result<Wrapper> {
@@ -326,7 +328,7 @@ index c7dafa1..f800d54 100644
      let install = steam::find_game();
      let wrapped = install
          .as_ref()
-@@ -1670,7 +1820,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
+@@ -1755,7 +1905,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
                  .any(|(_, o)| steam::wrapper_installed(o))
          })
          .unwrap_or(false);
@@ -852,7 +854,7 @@ index 0000000..2c46203
 +#[cfg(windows)]
 +pub(super) use windows::spawn;
 diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
-index c1f3ff1..ce8d382 100644
+index a31ff89..11d9415 100644
 --- a/packages/core/src/lib.rs
 +++ b/packages/core/src/lib.rs
 @@ -1,5 +1,11 @@
@@ -868,10 +870,10 @@ index c1f3ff1..ce8d382 100644
  pub mod addon_storage;
  pub mod app_control;
 diff --git a/packages/core/src/session.rs b/packages/core/src/session.rs
-index 82c6c09..468a7f2 100644
+index 816023a..1fd101f 100644
 --- a/packages/core/src/session.rs
 +++ b/packages/core/src/session.rs
-@@ -212,6 +212,9 @@ pub fn game_args(steam_args: &[String], mode: LaunchMode) -> Vec<String> {
+@@ -280,6 +280,9 @@ pub fn game_args(steam_args: &[String], mode: LaunchMode) -> Vec<String> {
  
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
  pub struct LaunchConfig {
@@ -881,7 +883,7 @@ index 82c6c09..468a7f2 100644
      #[serde(default, skip_serializing_if = "Option::is_none")]
      pub cpu_affinity: Option<String>,
      #[serde(default)]
-@@ -235,6 +238,7 @@ pub struct LaunchConfig {
+@@ -303,6 +306,7 @@ pub struct LaunchConfig {
  impl Default for LaunchConfig {
      fn default() -> Self {
          Self {
@@ -889,7 +891,7 @@ index 82c6c09..468a7f2 100644
              cpu_affinity: None,
              env: BTreeMap::new(),
              winedebug: default_winedebug(),
-@@ -245,6 +249,34 @@ impl Default for LaunchConfig {
+@@ -313,6 +317,34 @@ impl Default for LaunchConfig {
      }
  }
  
