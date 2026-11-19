@@ -36,7 +36,7 @@ index b7e79bd..17baed4 100644
  )]
  struct Cli {
 diff --git a/apps/cli/src/run.rs b/apps/cli/src/run.rs
-index dedbb68..224b840 100644
+index 4bb6f69..dde7923 100644
 --- a/apps/cli/src/run.rs
 +++ b/apps/cli/src/run.rs
 @@ -32,6 +32,11 @@ use crate::time::{now_secs, stamp};
@@ -152,19 +152,18 @@ index dedbb68..224b840 100644
          stage_offline(store, &game)?;
      } else {
          say(
-@@ -694,7 +711,10 @@ struct Session<'a> {
+@@ -694,6 +711,10 @@ struct Session<'a> {
  
  impl Drop for Session<'_> {
      fn drop(&mut self) {
--        let offline_left = match swofty_core::offline::restore_pending(&self.store.root, &self.game.dir) {
 +        if game_running_in(&self.game.dir) {
 +            info("F1 25 is still running; leaving the session journal for recovery after it closes");
 +            return;
-+        }        let offline_left = match swofty_core::offline::restore_pending(&self.store.root, &self.game.dir) {
++        }
+         let offline_left = match swofty_core::offline::restore_pending(&self.store.root, &self.game.dir) {
              Ok(Some(notes)) => {
                  for note in notes {
-                     info(&format!("offline play: {note}"));
-@@ -1126,7 +1146,8 @@ fn play(
+@@ -1126,7 +1147,8 @@ fn play(
              loader_missed(store, game, found.cause(game));
          }
      };
@@ -174,14 +173,14 @@ index dedbb68..224b840 100644
          true => Some(crate::ea::start(store, game, &extra, &dir, &copies_before)?),
          false => None,
      };
-@@ -1150,14 +1171,22 @@ fn play(
+@@ -1150,17 +1172,24 @@ fn play(
          }
      };
      let via_ea = ea.is_some();
 -    let (code, unread) = match ea {
 -        Some(started) => {
--            crate::ea::wait(game, &dir, &copies_before, started, tick);
--            (None, EA_UNREAD.to_owned())
+-            let code = crate::ea::wait(game, &dir, &copies_before, started, tick);
+-            (code.map(|c| c as i32), EA_UNREAD.to_owned())
 -        }
 -        None => {
 -            let status = wait_game(&mut spawn(target, "game_stdout.log")?, tick)?;
@@ -195,19 +194,23 @@ index dedbb68..224b840 100644
 +    } else {
 +        match ea {
 +            Some(started) => {
-+                crate::ea::wait(game, &dir, &copies_before, started, tick);
-+                (None, EA_UNREAD.to_owned())
++                let code = crate::ea::wait(game, &dir, &copies_before, started, tick);
++                (code.map(|c| c as i32), EA_UNREAD.to_owned())
 +            }
 +            None => {
 +                let status = wait_game(&mut spawn(target, "game_stdout.log")?, tick)?;
 +                (status.code(), why_no_code(status))
 +            }
          }
-     };
-     if let Some(w) = watch.as_mut()
-@@ -1233,6 +1262,124 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
+-    };
+-    if let Some(w) = watch.as_mut()
++    };    if let Some(w) = watch.as_mut()
+         && w.state() == Attach::Waiting
+     {
+         verdict(w.ended(Instant::now()));
+@@ -1233,6 +1262,125 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
  const EA_UNREAD: &str =
-     "the EA app started F1 25, so the session has no handle on the game to read its exit code";
+     "the session could not read the exit code of the F1 25 the EA app started; the [ea app] lines say why";
  
 +pub(crate) fn configured_loader(store: &Store, game: &Path) -> Option<PathBuf> {
 +    std::env::var_os("SWOFTY_CUSTOM_LOADER")
@@ -327,10 +330,11 @@ index dedbb68..224b840 100644
 +    Ok(())
 +}
 +
++
  /// Why an exit status carries no code.
  fn why_no_code(status: ExitStatus) -> String {
      #[cfg(unix)]
-@@ -1838,6 +1985,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
+@@ -1838,6 +1986,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
  }
  
  fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[String]) -> Result<Wrapper> {
@@ -338,7 +342,7 @@ index dedbb68..224b840 100644
      let install = steam::find_game();
      let wrapped = install
          .as_ref()
-@@ -1848,7 +1996,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
+@@ -1848,7 +1997,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
                  .any(|(_, o)| steam::wrapper_installed(o))
          })
          .unwrap_or(false);
@@ -864,9 +868,10 @@ index 0000000..2c46203
 +#[cfg(windows)]
 +pub(super) use windows::spawn;
 diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
+index 434b1f7..c60fba4 100644
 --- a/packages/core/src/lib.rs
 +++ b/packages/core/src/lib.rs
-@@ -1,3 +1,8 @@
+@@ -1,4 +1,9 @@
  pub use swofty_addon::{GAME_ID, asset, builder, launcher, manifest, ops, view};
 +/// Human-readable label for locally packaged builds; compatibility uses the package version.
 +pub const DISPLAY_VERSION: &str = match option_env!("SWOFTY_BUILD_LABEL") {
@@ -875,6 +880,7 @@ diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
 +};
  
  pub mod activation;
+ pub mod addon_files;
 diff --git a/packages/core/src/session.rs b/packages/core/src/session.rs
 index 400f0b7..579aea1 100644
 --- a/packages/core/src/session.rs
