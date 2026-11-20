@@ -1,15 +1,15 @@
-diff --git a/apps/cli/src/build.rs b/apps/cli/src/build.rs
-index 0962e1e..f8b73c0 100644
---- a/apps/cli/src/build.rs
-+++ b/apps/cli/src/build.rs
-@@ -443,14 +443,17 @@ fn install_checked(
+diff --git a/apps/cli/src/commands/build/install.rs b/apps/cli/src/commands/build/install.rs
+index 12ab587c1..38106270a 100644
+--- a/apps/cli/src/commands/build/install.rs
++++ b/apps/cli/src/commands/build/install.rs
+@@ -139,14 +139,21 @@ fn install_checked(
      out: &dyn Fn(&str),
      progress: &dyn Fn(usize, usize),
  ) -> Result<()> {
--    crate::setup::gate(store)?;
-+    let custom = session && crate::run::configured_loader(store, &g.dir).is_some();
+-    crate::commands::setup::gate(store)?;
++    let custom = session && crate::commands::run::custom_loader(store, &g.dir)?.is_some();
 +    if !custom {
-+        crate::setup::gate(store)?;
++        crate::commands::setup::gate(store)?;
 +    }
      Blocked::clear(&store.root).ok();
      stock::Report::clear(&store.root).ok();
@@ -17,16 +17,20 @@ index 0962e1e..f8b73c0 100644
      if !session {
          check_entitled(store, g)?;
      }
--    let depots = check_stock(store, g, out)?;
-+    let depots = if custom { None } else { check_stock(store, g, out)? };
+-    let depots = swofty_core::diagnostics::phases::time("play.stock_check", || check_stock(store, g, out))?;
++    let depots = if custom {
++        None
++    } else {
++        swofty_core::diagnostics::phases::time("play.stock_check", || check_stock(store, g, out))?
++    };
      let inst = Installer {
          session,
          depot: depots.as_ref().map_or(&() as &dyn DepotHashes, |d| d),
-diff --git a/apps/cli/src/main.rs b/apps/cli/src/main.rs
-index b7e79bd..17baed4 100644
---- a/apps/cli/src/main.rs
-+++ b/apps/cli/src/main.rs
-@@ -34,7 +34,7 @@ use swofty_core::store::Store;
+diff --git a/apps/cli/src/commands/cli.rs b/apps/cli/src/commands/cli.rs
+index 04a2b0f1f..b9225f6c6 100644
+--- a/apps/cli/src/commands/cli.rs
++++ b/apps/cli/src/commands/cli.rs
+@@ -11,7 +11,7 @@ use crate::commands::{
  #[derive(Parser)]
  #[command(
      name = "swofty",
@@ -34,24 +38,84 @@ index b7e79bd..17baed4 100644
 +    version = swofty_core::DISPLAY_VERSION,
      about = "Swofty Launcher for F1 25: addons, mods and tracks"
  )]
- struct Cli {
-diff --git a/apps/cli/src/run.rs b/apps/cli/src/run.rs
-index 4bb6f69..dde7923 100644
---- a/apps/cli/src/run.rs
-+++ b/apps/cli/src/run.rs
-@@ -32,6 +32,11 @@ use crate::time::{now_secs, stamp};
+ pub(crate) struct Cli {
+diff --git a/apps/cli/src/commands/run/launch.rs b/apps/cli/src/commands/run/launch.rs
+index 9d550decb..bfda598af 100644
+--- a/apps/cli/src/commands/run/launch.rs
++++ b/apps/cli/src/commands/run/launch.rs
+@@ -26,6 +26,7 @@ use crate::time::now_secs;
+ pub(crate) fn run(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<ExitCode> {
+     crate::commands::build::supported(g)?;
+     let game = g.dir.clone();
++    let custom = crate::commands::run::custom_loader(store, &game)?;
+     let running = game_processes();
+     if let Some(first) = running.first() {
+         if !args.restart {
+@@ -57,9 +58,11 @@ pub(crate) fn run(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Res
+     }
+     // Modded sessions run without EA AntiCheat: the terms are accepted once,
+     // and declining means the game is not launched.
+-    crate::commands::offline::gate(store, std::io::stdin().is_terminal())?;
+-    if args.apply {
+-        crate::commands::setup::gate(store)?;
++    if custom.is_none() {
++        crate::commands::offline::gate(store, std::io::stdin().is_terminal())?;
++        if args.apply {
++            crate::commands::setup::gate(store)?;
++        }
+     }
+     if let Some(state) = swofty_core::platform::steam::find_game()
+         .filter(|i| swofty_core::game_folder::copies::same_dir(&i.dir, &game))
+@@ -67,17 +70,19 @@ pub(crate) fn run(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Res
+     {
+         bail!("Steam is {state} F1 25; wait for it to finish, then press Play again");
+     }
+-    let source = Source::detect(&game);
+-    if crate::stores::ea::store_start(source) == crate::stores::ea::StoreStart::EaApp {
+-        crate::stores::ea::check_recorded(&game)?;
+-        let stock = swofty_core::build_support::blocked(&game.join(GAME_EXE)).is_some();
+-        let vanilla = store.profile(profile).is_ok_and(|p| p.is_vanilla());
+-        crate::stores::ea::check_elevation(store, &game, !stock && !vanilla)?;
+-        if args.apply && !stock {
+-            crate::stores::ea::dll_setting(store, g, args.no_start_store)?;
++    if custom.is_none() {
++        let source = Source::detect(&game);
++        if crate::stores::ea::store_start(source) == crate::stores::ea::StoreStart::EaApp {
++            crate::stores::ea::check_recorded(&game)?;
++            let stock = swofty_core::build_support::blocked(&game.join(GAME_EXE)).is_some();
++            let vanilla = store.profile(profile).is_ok_and(|p| p.is_vanilla());
++            crate::stores::ea::check_elevation(store, &game, !stock && !vanilla)?;
++            if args.apply && !stock {
++                crate::stores::ea::dll_setting(store, g, args.no_start_store)?;
++            }
+         }
++        crate::stores::client::ensure_client(store, source, &game, args.no_start_store)?;
+     }
+-    crate::stores::client::ensure_client(store, source, &game, args.no_start_store)?;
+     let id = format!("{:x}{:x}", std::process::id(), (now_secs() * 1e6) as u64);
+     let request = LaunchRequest {
+         id: id.clone(),
+diff --git a/apps/cli/src/commands/run/mod.rs b/apps/cli/src/commands/run/mod.rs
+index 01bb25ac1..add68b43f 100644
+--- a/apps/cli/src/commands/run/mod.rs
++++ b/apps/cli/src/commands/run/mod.rs
+@@ -11,11 +11,14 @@ use std::path::PathBuf;
+ use std::process::ExitCode;
  
- const KB: &str = include_str!("../../../re/db/functions.tsv");
+ use crate::commands::{Execute, Invocation};
+-use anyhow::Result;
++use anyhow::{Result, bail};
+ use clap::Args;
+ use swofty_core::session::DEFAULT_WINEDEBUG;
+ use swofty_core::store::Store;
  
-+mod loader_process;
-+
 +#[cfg(all(test, windows))]
 +mod custom_tests;
 +
- #[derive(Args)]
- pub struct RunArgs {
-     #[arg(long, default_value = DEFAULT_WINEDEBUG, help = "WINEDEBUG channels for the game process")]
-@@ -40,7 +45,7 @@ pub struct RunArgs {
+ impl Execute for RunArgs {
+     fn execute(self, invocation: &Invocation) -> Result<ExitCode> {
+         run(&invocation.store, &invocation.profile, self)
+@@ -32,7 +35,7 @@ pub struct RunArgs {
      restart: bool,
      #[arg(
          long,
@@ -60,133 +124,144 @@ index 4bb6f69..dde7923 100644
      )]
      direct: bool,
      #[arg(
-@@ -96,6 +101,7 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
-         .clone()
-         .or_else(|| wrapped.then(|| std::env::current_dir().ok()).flatten());
-     let g = crate::build::game(store, explicit)?;
-+    let custom = custom_loader(store, &g.dir)?;
-     if wrapped {
-         return wrapper(store, profile, &args, &g).inspect_err(|e| note_blocked(store, e));
-     }
-@@ -132,8 +138,10 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
-     }
-     // Modded sessions run without EA AntiCheat: the terms are accepted once,
-     // and declining means the game is not launched.
--    crate::offline::gate(store, std::io::stdin().is_terminal())?;
--    if args.apply {
-+    if custom.is_none() {
-+        crate::offline::gate(store, std::io::stdin().is_terminal())?;
-+    }
-+    if args.apply && custom.is_none() {
-         crate::setup::gate(store)?;
-     }
-     if let Some(state) = swofty_core::steam::find_game()
-@@ -142,20 +150,21 @@ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
-     {
-         bail!("Steam is {state} F1 25; wait for it to finish, then press Play again");
-     }
--    match crate::ea::store_start(Source::detect(&game)) {
--        crate::ea::StoreStart::EaApp => {
--            crate::ea::check_recorded(&game)?;
--            let stock = swofty_core::build_support::blocked(&game.join(GAME_EXE)).is_some();
--            let vanilla = store.profile(profile).is_ok_and(|p| p.is_vanilla());
--            crate::ea::check_elevation(store, &game, !stock && !vanilla)?;
--            if args.apply && !stock {
--                crate::ea::dll_setting(store, &g, args.no_start_store)?;
-+    if custom.is_none() {
-+        match crate::ea::store_start(Source::detect(&game)) {
-+            crate::ea::StoreStart::EaApp => {
-+                crate::ea::check_recorded(&game)?;
-+                let stock = swofty_core::build_support::blocked(&game.join(GAME_EXE)).is_some();
-+                let vanilla = store.profile(profile).is_ok_and(|p| p.is_vanilla());
-+                crate::ea::check_elevation(store, &game, !stock && !vanilla)?;
-+                if args.apply && !stock {
-+                    crate::ea::dll_setting(store, &g, args.no_start_store)?;
-+                }
-+                crate::ea::ensure(store, args.no_start_store)?
-             }
--            crate::ea::ensure(store, args.no_start_store)?
-+            crate::ea::StoreStart::Steam => ensure_steam(store, &game, args.no_start_store)?,
-         }
--        crate::ea::StoreStart::Steam => ensure_steam(store, &game, args.no_start_store)?,
--    }
--    let id = format!("{:x}{:x}", std::process::id(), (now_secs() * 1e6) as u64);
-+    }    let id = format!("{:x}{:x}", std::process::id(), (now_secs() * 1e6) as u64);
-     let request = LaunchRequest {
-         id: id.clone(),
-         winedebug: Some(args.winedebug.clone()),
-@@ -446,6 +455,7 @@ pub fn logs(store: &Store, dir: Option<PathBuf>, exe: Option<PathBuf>) -> Result
+@@ -81,6 +84,42 @@ pub struct RunArgs {
+     steam_command: Vec<String>,
  }
  
- fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<ExitCode> {
-+    let custom = custom_loader(store, &g.dir)?;
-     if let Some(running) = game_processes().first() {
-         return Err(already_running(
-             store,
-@@ -455,9 +465,11 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
-     }
-     let lock = crate::recover::lock(store, &info)?;
-     crate::recover::stale(store, &lock, g, Scope::All, &info)?;
--    crate::offline::gate(store, false)?;
--    swofty_core::entitlement::check_store_start(&g.dir, args.via_ea)?;
--    crate::build::check_entitled(store, g)?;
-+    if custom.is_none() {
-+        crate::offline::gate(store, false)?;
-+        swofty_core::entitlement::check_store_start(&g.dir, args.via_ea)?;
-+        crate::build::check_entitled(store, g)?;
++pub(crate) fn custom_loader(store: &Store, game: &std::path::Path) -> Result<Option<PathBuf>> {
++    let Some(loader) = std::env::var_os("SWOFTY_CUSTOM_LOADER")
++        .or_else(|| std::env::var_os("SWOFTY_CUSTOM_BATCH"))
++        .map(PathBuf::from)
++        .or_else(|| store.config().launch.custom_batch(game).map(PathBuf::from))
++    else {
++        return Ok(None);
++    };
++    if !cfg!(windows) {
++        bail!("Custom loader launch is only available on Windows");
 +    }
-     let version = swofty_core::exe_version::read(&g.dir.join(GAME_EXE));
-     if let Some(d) = swofty_core::known_problems::outdated_exe(version.as_deref()) {
++    if !game.join(swofty_core::GAME_EXE).is_file() {
++        bail!("{} is missing from {}", swofty_core::GAME_EXE, game.display());
++    }
++    let batch = loader.extension().is_some_and(|e| e.eq_ignore_ascii_case("bat"));
++    let executable = loader.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"));
++    if !loader.is_absolute() || !loader.is_file() || !(batch || executable) {
++        bail!(
++            "Select an existing .bat or .exe loader file: {}",
++            loader.display()
++        );
++    }
++    if batch
++        && loader
++            .to_string_lossy()
++            .chars()
++            .any(|c| c as u32 == 37 || c as u32 == 13 || c as u32 == 10 || c as u32 == 34)
++    {
++        bail!(
++            "The .bat loader path must have no percent signs or quotes: {}",
++            loader.display()
++        );
++    }
++    Ok(Some(loader))
++}
++
+ pub fn run(store: &Store, profile: &str, args: RunArgs) -> Result<ExitCode> {
+     let wrapped = !args.steam_command.is_empty();
+     let explicit = args
+diff --git a/apps/cli/src/commands/run/wrapper/mod.rs b/apps/cli/src/commands/run/wrapper/mod.rs
+index 55dc2f9d0..340a5fdd9 100644
+--- a/apps/cli/src/commands/run/wrapper/mod.rs
++++ b/apps/cli/src/commands/run/wrapper/mod.rs
+@@ -34,9 +34,12 @@ pub(crate) fn run(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Res
+     }
+     let lock = crate::session_lock::lock(store, &info)?;
+     crate::session_lock::stale(store, &lock, g, Scope::All, &info)?;
+-    crate::commands::offline::gate(store, false)?;
+-    swofty_core::game_folder::entitlement::check_store_start(&g.dir, args.via_ea)?;
+-    crate::commands::build::check_entitled(store, g)?;
++    let custom = crate::commands::run::custom_loader(store, &g.dir)?;
++    if custom.is_none() {
++        crate::commands::offline::gate(store, false)?;
++        swofty_core::game_folder::entitlement::check_store_start(&g.dir, args.via_ea)?;
++        crate::commands::build::check_entitled(store, g)?;
++    }
+     let version = swofty_core::game_folder::exe_version::read(&g.dir.join(GAME_EXE));
+     if let Some(d) = swofty_core::diagnostics::known_problems::outdated_exe(version.as_deref()) {
          say("warning", &format!("{}: {}", d.title, d.text()));
-@@ -552,7 +564,12 @@ fn wrapper(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Result<Exi
+@@ -134,7 +137,7 @@ pub(crate) fn run(store: &Store, profile: &str, args: &RunArgs, g: &Game) -> Res
      );
      become_subreaper();
      let vanilla = store.profile(&profile).is_ok_and(|p| p.is_vanilla());
--    if crate::ea::stages_offline(args.via_ea, vanilla) {
-+    if custom.is_some() {
-+        say(
-+            "info",
-+            "custom loader launch: offline preparation is handled by the loader file",
-+        );
-+    } else if crate::ea::stages_offline(args.via_ea, vanilla) {
+-    if crate::stores::ea::stages_offline(args.via_ea, vanilla) {
++    if custom.is_none() && crate::stores::ea::stages_offline(args.via_ea, vanilla) {
          stage_offline(store, &game)?;
      } else {
          say(
-@@ -694,6 +711,10 @@ struct Session<'a> {
+@@ -281,6 +284,10 @@ pub(super) fn rolled_back(offline_left: bool) -> &'static str {
  
  impl Drop for Session<'_> {
      fn drop(&mut self) {
-+        if game_running_in(&self.game.dir) {
++        if swofty_core::platform::process::game_running_in(&self.game.dir) {
 +            info("F1 25 is still running; leaving the session journal for recovery after it closes");
 +            return;
 +        }
          let offline_left = match swofty_core::offline::restore_pending(&self.store.root, &self.game.dir) {
              Ok(Some(notes)) => {
                  for note in notes {
-@@ -1126,7 +1147,8 @@ fn play(
-             loader_missed(store, game, found.cause(game));
-         }
+diff --git a/apps/cli/src/commands/run/wrapper/play/mod.rs b/apps/cli/src/commands/run/wrapper/play/mod.rs
+index db9ce1be1..c0133ab0f 100644
+--- a/apps/cli/src/commands/run/wrapper/play/mod.rs
++++ b/apps/cli/src/commands/run/wrapper/play/mod.rs
+@@ -1,5 +1,6 @@
+ mod end;
+ mod env;
++mod loader_process;
+ mod loader_watch;
+ 
+ use std::collections::BTreeMap;
+@@ -7,7 +8,7 @@ use std::path::{Path, PathBuf};
+ use std::process::{Child, Command, ExitStatus};
+ use std::time::{Duration, Instant, SystemTime};
+ 
+-use anyhow::Result;
++use anyhow::{Result, bail};
+ use swofty_core::GAME_EXE;
+ use swofty_core::install::Game;
+ use swofty_core::platform::process::{descends_from, game_processes, stop_process};
+@@ -57,6 +58,7 @@ pub(crate) fn play(
+         LaunchMode::of(cmd.game_args())
      };
+     let extra = game_args(cmd.game_args(), mode);
++    let custom = crate::commands::run::custom_loader(store, game)?;
+     let proton = cmd.proton.map(PathBuf::from).or_else(|| {
+         let tools = std::env::var("STEAM_COMPAT_TOOL_PATHS").ok()?;
+         Some(PathBuf::from(tools.split(':').next()?).join("proton"))
+@@ -81,7 +83,7 @@ pub(crate) fn play(
+     let usage = swofty_core::online::server::usage::Session::start(&store.root, game);
+     let laps = crate::commands::laps::begin(store, config, profile, g);
+     let mut watch = LoaderWatch::new(store, g, &session, launched, placed_loader);
 -    let ea = match args.via_ea {
-+    let custom = custom_loader(store, game)?;
 +    let ea = match args.via_ea && custom.is_none() {
-         true => Some(crate::ea::start(store, game, &extra, &dir, &copies_before)?),
-         false => None,
-     };
-@@ -1150,17 +1172,24 @@ fn play(
-         }
-     };
+         true => Some(crate::stores::ea::start(
+             store,
+             game,
+@@ -95,16 +97,26 @@ pub(crate) fn play(
+         watch.restart();
+     }
      let via_ea = ea.is_some();
 -    let (code, unread) = match ea {
 -        Some(started) => {
--            let code = crate::ea::wait(game, &dir, &copies_before, started, tick);
+-            let code = crate::stores::ea::wait(game, dir, &copies_before, started, || watch.tick());
 -            (code.map(|c| c as i32), EA_UNREAD.to_owned())
 -        }
 -        None => {
--            let status = wait_game(&mut spawn(target, "game_stdout.log")?, tick)?;
+-            let status = wait_game(&mut command.spawn(dir, target, "game_stdout.log")?, || {
+-                watch.tick()
+-            })?;
 -            (status.code(), why_no_code(status))
 +    let (code, unread) = if let Some(loader) = custom {
-+        wait_custom_loader(store, game, &loader, &dir, &copies_before, &game_env, tick)?;
++        wait_custom_loader(store, game, &loader, dir, &copies_before, &command.env, || {
++            watch.tick()
++        })?;
 +        (
 +            None,
 +            "the custom loader started F1 25; its exit code is unavailable".to_owned(),
@@ -194,87 +269,38 @@ index 4bb6f69..dde7923 100644
 +    } else {
 +        match ea {
 +            Some(started) => {
-+                let code = crate::ea::wait(game, &dir, &copies_before, started, tick);
++                let code = crate::stores::ea::wait(game, dir, &copies_before, started, || watch.tick());
 +                (code.map(|c| c as i32), EA_UNREAD.to_owned())
 +            }
 +            None => {
-+                let status = wait_game(&mut spawn(target, "game_stdout.log")?, tick)?;
++                let status = wait_game(&mut command.spawn(dir, target, "game_stdout.log")?, || {
++                    watch.tick()
++                })?;
 +                (status.code(), why_no_code(status))
 +            }
          }
--    };
--    if let Some(w) = watch.as_mut()
-+    };    if let Some(w) = watch.as_mut()
-         && w.state() == Attach::Waiting
-     {
-         verdict(w.ended(Instant::now()));
-@@ -1233,6 +1262,125 @@ fn note_known_problem(store: &Store, game: &Path, dir: &Path, crashed: bool) {
- const EA_UNREAD: &str =
-     "the session could not read the exit code of the F1 25 the EA app started; the [ea app] lines say why";
+     };
+     watch.ended();
+@@ -120,6 +132,82 @@ pub(crate) fn play(
+     end_session(store, game, dir, Played { code, unread, via_ea }, launched, usage)
+ }
  
-+pub(crate) fn configured_loader(store: &Store, game: &Path) -> Option<PathBuf> {
-+    std::env::var_os("SWOFTY_CUSTOM_LOADER")
-+        .or_else(|| std::env::var_os("SWOFTY_CUSTOM_BATCH"))
-+        .map(PathBuf::from)
-+        .or_else(|| store.config().launch.custom_batch(game).map(Path::to_path_buf))
-+}
-+
-+fn custom_loader(store: &Store, game: &Path) -> Result<Option<PathBuf>> {
-+    let Some(loader) = configured_loader(store, game) else {
-+        return Ok(None);
-+    };
-+    if !cfg!(windows) {
-+        bail!("Custom loader launch is only available on Windows");
-+    }
-+    if !game.join(GAME_EXE).is_file() {
-+        bail!("{} is missing from {}", GAME_EXE, game.display());
-+    }
-+    let extension = loader.extension();
-+    let batch = extension.is_some_and(|ext| ext.eq_ignore_ascii_case("bat"));
-+    let exe = extension.is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-+    if !loader.is_absolute() || !loader.is_file() || !(batch || exe) {
-+        bail!("Select an existing .bat or .exe loader file: {}", loader.display());
-+    }
-+    if batch && loader.to_string_lossy().contains(['%', '\r', '\n', '"']) {
-+        bail!("The .bat loader path must have no percent signs or quotes: {}", loader.display());
-+    }
-+    Ok(Some(loader))
-+}
-+
 +fn wait_custom_loader(
 +    store: &Store,
 +    game: &Path,
 +    loader: &Path,
 +    session: &Path,
 +    before: &[u32],
-+    env: &std::collections::BTreeMap<String, String>,
++    env: &BTreeMap<String, String>,
 +    mut tick: impl FnMut(),
 +) -> Result<()> {
-+    wait_custom_loader_for(
-+        store,
-+        game,
-+        loader,
-+        session,
-+        before,
-+        env,
-+        &mut tick,
-+        Duration::from_secs(120),
-+    )
-+}
++    use crate::stores::steam::StageFile;
++    use swofty_core::platform::steam::client as steam_client;
 +
-+#[allow(clippy::too_many_arguments)]
-+fn wait_custom_loader_for(
-+    store: &Store,
-+    game: &Path,
-+    loader: &Path,
-+    session: &Path,
-+    before: &[u32],
-+    env: &std::collections::BTreeMap<String, String>,
-+    tick: &mut impl FnMut(),
-+    timeout: Duration,
-+) -> Result<()> {
 +    let stage = StageFile(store.root.join(steam_client::STAGE_FILE));
 +    stage.set("Starting F1 25 through custom loader…");
++    let log = session.join("custom_loader.log");
++    std::fs::File::create(&log)?;
 +    say(
 +        "info",
 +        &format!(
@@ -283,9 +309,8 @@ index 4bb6f69..dde7923 100644
 +            game.display()
 +        ),
 +    );
-+    let log = session.join("custom_loader.log");
-+    std::fs::File::create(&log)?;
-+    let mut child = loader_process::spawn(game, loader, env, &log).context("starting the custom loader file")?;
++    let mut child = loader_process::spawn(game, loader, env, &log)
++        .map_err(|e| anyhow::anyhow!("starting the custom loader file: {e}"))?;
 +    let start = Instant::now();
 +    let mut seen = false;
 +    let mut stopped = false;
@@ -308,360 +333,96 @@ index 4bb6f69..dde7923 100644
 +        if loader_exit.is_none() {
 +            loader_exit = child.try_wait()?;
 +        }
-+        if !seen && (ending() || loader_exit.is_some_and(|s| !s.success()) || start.elapsed() >= timeout) {
++        if !seen
++            && (ending()
++                || loader_exit.is_some_and(|status| !status.success())
++                || start.elapsed() >= Duration::from_secs(120))
++        {
 +            child.kill().ok();
 +            child.wait().ok();
 +            bail!(
-+                "Custom loader did not start F1 25 (loader status: {:?}); see {}",
-+                loader_exit,
-+                session.join("custom_loader.log").display()
++                "Custom loader did not start F1 25 (loader status: {loader_exit:?}); see {}",
++                log.display()
 +            );
 +        }
 +        if seen && ending() && !stopped {
 +            stopped = true;
-+            for g in &running {
-+                stop_process(g.pid).ok();
++            say(
++                "info",
++                "asked to stop: closing F1 25, then rolling its game files back",
++            );
++            for game_process in &running {
++                stop_process(game_process.pid).ok();
 +            }
 +        }
-+        std::thread::sleep(Duration::from_millis(200));
++        std::thread::sleep(Duration::from_millis(250));
 +    }
-+    // The loader may outlive the game. Reap it without treating its lifetime as the game's.
++    // A loader may outlive F1 25; reap it without making its lifetime the game session.
 +    std::thread::spawn(move || child.wait().ok());
 +    Ok(())
 +}
+ /// A session's folder under the sessions folder, with the loader log's mark
+ /// from before the game started.
+ struct SessionDir {
+diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
+index f05c2467a..850d87e51 100644
+--- a/packages/core/src/lib.rs
++++ b/packages/core/src/lib.rs
+@@ -20,6 +20,11 @@ pub use games::f1_25::{
+     row_ids, saves, stdlib, testsuite, tracks, ui,
+ };
+ 
++pub const DISPLAY_VERSION: &str = match option_env!("SWOFTY_BUILD_LABEL") {
++    Some(version) => version,
++    None => env!("CARGO_PKG_VERSION"),
++};
 +
-+
- /// Why an exit status carries no code.
- fn why_no_code(status: ExitStatus) -> String {
-     #[cfg(unix)]
-@@ -1838,6 +1986,7 @@ fn wrapper_command(proton: Option<&Path>, game: &Path, mode: LaunchMode, extra:
+ pub const STEAM_APP_ID: u32 = 3_059_520;
+ pub const GAME_EXE: &str = swofty_addon::game::F1_25.exe();
+ pub const IMAGE_BASE: u64 = 0x1_4000_0000;
+diff --git a/packages/core/src/session/mod.rs b/packages/core/src/session/mod.rs
+index 54e65c0e8..c2a51b42d 100644
+--- a/packages/core/src/session/mod.rs
++++ b/packages/core/src/session/mod.rs
+@@ -335,6 +335,9 @@ pub fn game_args(steam_args: &[String], mode: LaunchMode) -> Vec<String> {
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ pub struct LaunchConfig {
++    /// Opt-in loader file, keyed by the game folder it applies to.
++    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
++    pub custom_batches: BTreeMap<PathBuf, PathBuf>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub cpu_affinity: Option<String>,
+     #[serde(default)]
+@@ -358,6 +361,7 @@ pub struct LaunchConfig {
+ impl Default for LaunchConfig {
+     fn default() -> Self {
+         Self {
++            custom_batches: BTreeMap::new(),
+             cpu_affinity: None,
+             env: BTreeMap::new(),
+             winedebug: default_winedebug(),
+@@ -368,6 +372,14 @@ impl Default for LaunchConfig {
+     }
  }
  
- fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[String]) -> Result<Wrapper> {
-+    let custom = custom_loader(store, game)?.is_some();
-     let install = steam::find_game();
-     let wrapped = install
-         .as_ref()
-@@ -1848,7 +1997,7 @@ fn launch(store: &Store, game: &Path, direct: bool, mode: LaunchMode, extra: &[S
-                 .any(|(_, o)| steam::wrapper_installed(o))
-         })
-         .unwrap_or(false);
--    if crate::ea::store_start(Source::detect(game)) == crate::ea::StoreStart::EaApp {
-+    if !custom && crate::ea::store_start(Source::detect(game)) == crate::ea::StoreStart::EaApp {
-         let mut c = Command::new(std::env::current_exe()?);
-         c.arg(flag("data-dir", &store.root))
-             .arg("run")
-diff --git a/apps/cli/src/run/custom_tests.rs b/apps/cli/src/run/custom_tests.rs
++impl LaunchConfig {
++    pub fn custom_batch(&self, game: &Path) -> Option<&Path> {
++        self.custom_batches.iter().find_map(|(dir, batch)| {
++            crate::game_folder::copies::same_dir(dir, game).then_some(batch.as_path())
++        })
++    }
++}
++
+ fn yes() -> bool {
+     true
+ }
+
+diff --git a/apps/cli/src/commands/run/wrapper/play/loader_process.rs b/apps/cli/src/commands/run/wrapper/play/loader_process.rs
 new file mode 100644
-index 0000000..b66d3c0
+index 000000000..e67a45666
 --- /dev/null
-+++ b/apps/cli/src/run/custom_tests.rs
-@@ -0,0 +1,300 @@
-+//! Windows process tests use a copy of cmd.exe as the game; no real game is started.
-+use super::*;
-+
-+struct Fixture {
-+    root: PathBuf,
-+    store: Store,
-+    game: PathBuf,
-+    batch: PathBuf,
-+    session: PathBuf,
-+}
-+
-+impl Fixture {
-+    fn new(script: &str) -> Self {
-+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-+        let root = std::env::temp_dir().join(format!(
-+            "swofty custom batch {} {}",
-+            std::process::id(),
-+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-+        ));
-+        let game = root.join("game folder");
-+        let session = root.join("session");
-+        std::fs::create_dir_all(&game).unwrap();
-+        std::fs::create_dir_all(&session).unwrap();
-+        let batch = root.join("launch game.bat");
-+        std::fs::write(&batch, script).unwrap();
-+        let store = Store::new(root.join("data"));
-+        Self {
-+            root,
-+            store,
-+            game,
-+            batch,
-+            session,
-+        }
-+    }
-+
-+    fn run(&self) -> Result<()> {
-+        let env = std::env::vars().collect();
-+        wait_custom_loader_for(
-+            &self.store,
-+            &self.game,
-+            &self.batch,
-+            &self.session,
-+            &[],
-+            &env,
-+            &mut || {},
-+            Duration::from_secs(5),
-+        )
-+    }
-+
-+    fn install_mod(&self) -> Game {
-+        let target = self.game.join("game_package/db.bin");
-+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-+        std::fs::write(&target, "original").unwrap();
-+        let source = self.root.join("mod.bin");
-+        std::fs::write(&source, "modded").unwrap();
-+        let game = Game {
-+            identity: swofty_core::baseline::Identity::detect(&self.game, Some(1)).unwrap(),
-+            dir: self.game.clone(),
-+            user_reg: None,
-+        };
-+        let plan = swofty_core::install::Plan {
-+            profile: "custom".into(),
-+            data: [("game_package/db.bin".to_owned(), source)].into(),
-+            ..Default::default()
-+        };
-+        Installer {
-+            session: true,
-+            ..Installer::new(&self.store.root, &game)
-+        }
-+        .apply(&plan)
-+        .unwrap();
-+        game
-+    }
-+}
-+
-+impl Drop for Fixture {
-+    fn drop(&mut self) {
-+        stop_game_in(&self.game).ok();
-+        std::fs::remove_dir_all(&self.root).ok();
-+    }
-+}
-+
-+#[test]
-+fn detached_game_outlives_the_batch_and_is_waited_for_with_spaces_in_paths() {
-+    let f = Fixture::new(
-+        "@echo off\r\necho batch-output\r\nstart \"\" /b \"F1_25.exe\" /d /c \"ping -n 3 127.0.0.1 >nul\"\r\n",
-+    );
-+    let cmd = std::env::var_os("COMSPEC").unwrap();
-+    std::fs::copy(cmd, f.game.join(GAME_EXE)).unwrap();
-+    let game = f.install_mod();
-+    let session = Session {
-+        store: &f.store,
-+        game: &game,
-+        request_id: "custom".into(),
-+        _lock: SessionLock::try_acquire(&f.store.root).unwrap().unwrap(),
-+    };
-+    let start = Instant::now();
-+    let env = std::env::vars().collect();
-+    let result = wait_custom_loader_for(
-+        &f.store,
-+        &f.game,
-+        &f.batch,
-+        &f.session,
-+        &[],
-+        &env,
-+        &mut || {
-+            assert_eq!(
-+                std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
-+                "modded"
-+            )
-+        },
-+        Duration::from_secs(5),
-+    );
-+    finish(session, result.map(|_| ExitCode::SUCCESS)).unwrap();
-+    assert_eq!(
-+        std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
-+        "original"
-+    );
-+    assert!(start.elapsed() >= Duration::from_secs(1));
-+    assert!(!game_running_in(&f.game));
-+    assert!(
-+        std::fs::read_to_string(f.session.join("custom_loader.log"))
-+            .unwrap()
-+            .contains("batch-output")
-+    );
-+}
-+
-+#[test]
-+fn exe_loader_starts_the_game_from_the_selected_folder() {
-+    let f = Fixture::new("@exit /b 0\r\n");
-+    let loader = f.root.join("custom loader 100%.EXE");
-+    let source = f.root.join("fixture.rs");
-+    std::fs::write(
-+        &source,
-+        r#"
-+fn main() {
-+    let exe = std::env::current_exe().unwrap();
-+    if exe.file_name().unwrap() == "F1_25.exe" {
-+        std::thread::sleep(std::time::Duration::from_millis(1500));
-+        std::fs::write("game finished.txt", "done").unwrap();
-+    } else {
-+        println!("exe-loader-output");
-+        let game = std::env::current_dir().unwrap().join("F1_25.exe");
-+        std::process::Command::new(game).spawn().unwrap();
-+    }
-+}
-+"#,
-+    )
-+    .unwrap();
-+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-+    let output = Command::new(rustc)
-+        .arg(&source)
-+        .arg("-o")
-+        .arg(&loader)
-+        .output()
-+        .unwrap();
-+    assert!(
-+        output.status.success(),
-+        "{}",
-+        String::from_utf8_lossy(&output.stderr)
-+    );
-+    std::fs::copy(&loader, f.game.join(GAME_EXE)).unwrap();
-+    let mut config = f.store.config();
-+    config
-+        .launch
-+        .custom_batches
-+        .insert(f.game.clone(), loader.clone());
-+    f.store.save_config(&config).unwrap();
-+    assert_eq!(custom_loader(&f.store, &f.game).unwrap(), Some(loader.clone()));
-+
-+    let env = std::env::vars().collect();
-+    wait_custom_loader_for(
-+        &f.store,
-+        &f.game,
-+        &loader,
-+        &f.session,
-+        &[],
-+        &env,
-+        &mut || {},
-+        Duration::from_secs(5),
-+    )
-+    .unwrap();
-+    assert!(f.game.join("game finished.txt").is_file());
-+    let log = std::fs::read_to_string(f.session.join("custom_loader.log")).unwrap();
-+    assert!(log.contains("exe-loader-output"), "{log}");
-+}
-+
-+#[test]
-+fn unsuccessful_batch_reports_failure_before_the_startup_timeout() {
-+    let f = Fixture::new("@exit /b 7\r\n");
-+    std::fs::write(f.game.join(GAME_EXE), "fixture").unwrap();
-+    let game = f.install_mod();
-+    let session = Session {
-+        store: &f.store,
-+        game: &game,
-+        request_id: "custom-failure".into(),
-+        _lock: SessionLock::try_acquire(&f.store.root).unwrap().unwrap(),
-+    };
-+    let start = Instant::now();
-+    assert!(
-+        finish(session, f.run().map(|_| ExitCode::SUCCESS))
-+            .unwrap_err()
-+            .to_string()
-+            .contains("did not start F1 25")
-+    );
-+    assert_eq!(
-+        std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
-+        "original"
-+    );
-+    assert!(start.elapsed() < Duration::from_secs(5));
-+}
-+
-+#[test]
-+fn successful_batch_without_a_game_times_out() {
-+    let f = Fixture::new("@exit /b 0\r\n");
-+    let env = std::env::vars().collect();
-+    let result = wait_custom_loader_for(
-+        &f.store,
-+        &f.game,
-+        &f.batch,
-+        &f.session,
-+        &[],
-+        &env,
-+        &mut || {},
-+        Duration::from_millis(300),
-+    );
-+    assert!(result.unwrap_err().to_string().contains("did not start F1 25"));
-+}
-+
-+#[test]
-+fn missing_batch_is_rejected_before_launch() {
-+    let f = Fixture::new("@exit /b 0\r\n");
-+    let mut config = f.store.config();
-+    config
-+        .launch
-+        .custom_batches
-+        .insert(f.game.clone(), f.batch.clone());
-+    f.store.save_config(&config).unwrap();
-+    std::fs::write(f.game.join(GAME_EXE), "fixture").unwrap();
-+    std::fs::remove_file(&f.batch).unwrap();
-+    assert!(custom_loader(&f.store, &f.game).is_err());
-+}
-+
-+#[test]
-+fn timeout_delay_works_in_the_hidden_batch_console() {
-+    let f = Fixture::new(
-+        "@echo off\r\n\"%SystemRoot%\\System32\\timeout.exe\" /t 2 /nobreak >nul\r\nstart \"\" /b \"F1_25.exe\" /d /c \"ping -n 3 127.0.0.1 >nul\"\r\n",
-+    );
-+    std::fs::copy(std::env::var_os("COMSPEC").unwrap(), f.game.join(GAME_EXE)).unwrap();
-+    let start = Instant::now();
-+    f.run().unwrap();
-+    assert!(start.elapsed() >= Duration::from_secs(3));
-+    let log = std::fs::read_to_string(f.session.join("custom_loader.log")).unwrap();
-+    assert!(!log.contains("Input redirection is not supported"), "{log}");
-+}
-+
-+#[test]
-+fn interrupted_session_keeps_mods_until_game_exit_and_can_be_recovered() {
-+    let f = Fixture::new("@start \"\" /b \"F1_25.exe\" /d /c \"ping -n 3 127.0.0.1 >nul\"\r\n");
-+    std::fs::copy(std::env::var_os("COMSPEC").unwrap(), f.game.join(GAME_EXE)).unwrap();
-+    let game = f.install_mod();
-+    let mut session = Some(Session {
-+        store: &f.store,
-+        game: &game,
-+        request_id: "interrupted-custom".into(),
-+        _lock: SessionLock::try_acquire(&f.store.root).unwrap().unwrap(),
-+    });
-+    let env = std::env::vars().collect();
-+    wait_custom_loader_for(
-+        &f.store,
-+        &f.game,
-+        &f.batch,
-+        &f.session,
-+        &[],
-+        &env,
-+        &mut || {
-+            if game_running_in(&f.game) {
-+                drop(session.take());
-+            }
-+            assert_eq!(
-+                std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
-+                "modded"
-+            );
-+        },
-+        Duration::from_secs(5),
-+    )
-+    .unwrap();
-+    assert!(session.is_none());
-+    assert!(
-+        !swofty_core::journal::Journal::open(&f.store.root)
-+            .unwrap()
-+            .is_empty()
-+    );
-+    let lock = SessionLock::try_acquire(&f.store.root).unwrap().unwrap();
-+    crate::recover::stale(&f.store, &lock, &game, Scope::All, &info).unwrap();
-+    assert_eq!(
-+        std::fs::read_to_string(f.game.join("game_package/db.bin")).unwrap(),
-+        "original"
-+    );
-+}
-diff --git a/apps/cli/src/run/loader_process.rs b/apps/cli/src/run/loader_process.rs
-new file mode 100644
-index 0000000..2c46203
---- /dev/null
-+++ b/apps/cli/src/run/loader_process.rs
++++ b/apps/cli/src/commands/run/wrapper/play/loader_process.rs
 @@ -0,0 +1,204 @@
 +//! Start an executable directly or use a hidden console for a batch loader.
 +//! Batch commands such as `timeout` need a real console for stdin.
@@ -742,12 +503,12 @@ index 0000000..2c46203
 +        fn TerminateProcess(handle: Handle, code: u32) -> i32;
 +    }
 +
-+    pub(in super::super) struct LoaderChild {
++    pub(in crate::commands::run::wrapper::play) struct LoaderChild {
 +        handle: OwnedHandle,
 +    }
 +
 +    impl LoaderChild {
-+        pub(in super::super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
++        pub(in crate::commands::run::wrapper::play) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
 +            // SAFETY: OwnedHandle keeps this process handle valid for the call.
 +            match unsafe { WaitForSingleObject(self.handle.as_raw_handle(), 0) } {
 +                258 => Ok(None), // WAIT_TIMEOUT
@@ -763,7 +524,7 @@ index 0000000..2c46203
 +            }
 +        }
 +
-+        pub(in super::super) fn kill(&mut self) -> io::Result<()> {
++        pub(in crate::commands::run::wrapper::play) fn kill(&mut self) -> io::Result<()> {
 +            // SAFETY: the owned handle refers only to the loader process we created.
 +            if unsafe { TerminateProcess(self.handle.as_raw_handle(), 1) } == 0 {
 +                return Err(io::Error::last_os_error());
@@ -771,7 +532,7 @@ index 0000000..2c46203
 +            Ok(())
 +        }
 +
-+        pub(in super::super) fn wait(&mut self) -> io::Result<ExitStatus> {
++        pub(in crate::commands::run::wrapper::play) fn wait(&mut self) -> io::Result<ExitStatus> {
 +            // SAFETY: the handle remains owned throughout this blocking wait.
 +            if unsafe { WaitForSingleObject(self.handle.as_raw_handle(), u32::MAX) } != 0 {
 +                return Err(io::Error::last_os_error());
@@ -785,7 +546,7 @@ index 0000000..2c46203
 +        value.encode_wide().chain(Some(0)).collect()
 +    }
 +
-+    pub(in super::super) fn spawn(
++    pub(in crate::commands::run::wrapper::play) fn spawn(
 +        game: &Path,
 +        loader: &Path,
 +        env: &BTreeMap<String, String>,
@@ -867,74 +628,29 @@ index 0000000..2c46203
 +
 +#[cfg(windows)]
 +pub(super) use windows::spawn;
-diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
-index 434b1f7..c60fba4 100644
---- a/packages/core/src/lib.rs
-+++ b/packages/core/src/lib.rs
-@@ -1,4 +1,9 @@
- pub use swofty_addon::{GAME_ID, asset, builder, launcher, manifest, ops, view};
-+/// Human-readable label for locally packaged builds; compatibility uses the package version.
-+pub const DISPLAY_VERSION: &str = match option_env!("SWOFTY_BUILD_LABEL") {
-+    Some(label) => label,
-+    None => env!("CARGO_PKG_VERSION"),
-+};
- 
- pub mod activation;
- pub mod addon_files;
-diff --git a/packages/core/src/session.rs b/packages/core/src/session.rs
-index 400f0b7..579aea1 100644
---- a/packages/core/src/session.rs
-+++ b/packages/core/src/session.rs
-@@ -304,6 +304,9 @@ pub fn game_args(steam_args: &[String], mode: LaunchMode) -> Vec<String> {
- 
- #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
- pub struct LaunchConfig {
-+    /// Opt-in Windows loader file, keyed by the game folder it applies to.
-+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-+    pub custom_batches: BTreeMap<PathBuf, PathBuf>,
-     #[serde(default, skip_serializing_if = "Option::is_none")]
-     pub cpu_affinity: Option<String>,
-     #[serde(default)]
-@@ -327,6 +330,7 @@ pub struct LaunchConfig {
- impl Default for LaunchConfig {
-     fn default() -> Self {
-         Self {
-+            custom_batches: BTreeMap::new(),
-             cpu_affinity: None,
-             env: BTreeMap::new(),
-             winedebug: default_winedebug(),
-@@ -337,6 +341,34 @@ impl Default for LaunchConfig {
-     }
- }
- 
-+impl LaunchConfig {
-+    pub fn custom_batch(&self, game: &Path) -> Option<&Path> {
-+        self.custom_batches
-+            .iter()
-+            .find_map(|(dir, batch)| crate::copies::same_dir(dir, game).then_some(batch.as_path()))
-+    }
+
+diff --git a/apps/cli/src/commands/run/custom_tests.rs b/apps/cli/src/commands/run/custom_tests.rs
+new file mode 100644
+index 000000000..14e5d8644
+--- /dev/null
++++ b/apps/cli/src/commands/run/custom_tests.rs
+@@ -0,0 +1,19 @@
++use std::path::{Path, PathBuf};
++
++use swofty_core::session::LaunchConfig;
++
++#[test]
++fn custom_loader_settings_are_per_game_folder_and_old_settings_still_load() {
++    let mut config: LaunchConfig = serde_json::from_str("{}").unwrap();
++    assert!(config.custom_batch(Path::new("games/a")).is_none());
++    config
++        .custom_batches
++        .insert(PathBuf::from("games/a"), PathBuf::from("scripts/play.bat"));
++
++    let config: LaunchConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
++    assert_eq!(
++        config.custom_batch(Path::new("games/a")),
++        Some(Path::new("scripts/play.bat"))
++    );
++    assert!(config.custom_batch(Path::new("games/b")).is_none());
 +}
-+
-+#[cfg(test)]
-+mod custom_launch_tests {
-+    use super::*;
-+
-+    #[test]
-+    fn old_settings_default_to_store_launch_and_custom_launch_is_per_copy() {
-+        let mut config: LaunchConfig = serde_json::from_str("{}").unwrap();
-+        assert!(config.custom_batch(Path::new("games/a")).is_none());
-+        config
-+            .custom_batches
-+            .insert("games/a".into(), "scripts/play.bat".into());
-+        let config: LaunchConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
-+        assert_eq!(
-+            config.custom_batch(Path::new("games/a")),
-+            Some(Path::new("scripts/play.bat"))
-+        );
-+        assert!(config.custom_batch(Path::new("games/b")).is_none());
-+    }
-+}
-+
- fn yes() -> bool {
-     true
- }
