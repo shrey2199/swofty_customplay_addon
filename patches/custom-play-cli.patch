@@ -235,10 +235,18 @@ index db9ce1be1..c0133ab0f 100644
      let proton = cmd.proton.map(PathBuf::from).or_else(|| {
          let tools = std::env::var("STEAM_COMPAT_TOOL_PATHS").ok()?;
          Some(PathBuf::from(tools.split(':').next()?).join("proton"))
-@@ -81,7 +83,7 @@ pub(crate) fn play(
+@@ -81,15 +83,15 @@ pub(crate) fn play(
      let usage = swofty_core::online::server::usage::Session::start(&store.root, game);
      let laps = crate::commands::laps::begin(store, config, profile, g);
      let mut watch = LoaderWatch::new(store, g, &session, launched, placed_loader);
+     session_env::remove_leftover(game);
+     let _session_env = match args.via_ea {
+         true => SessionEnv::write(
+             game,
+             &session_env::Contents::new(&request.id, unix_secs(), &command.env, &config.launch.env),
+         ),
+         false => None,
+     };
 -    let ea = match args.via_ea {
 +    let ea = match args.via_ea && custom.is_none() {
          true => Some(crate::stores::ea::start(
@@ -281,9 +289,12 @@ index db9ce1be1..c0133ab0f 100644
          }
      };
      watch.ended();
-@@ -120,6 +132,82 @@ pub(crate) fn play(
-     end_session(store, game, dir, Played { code, unread, via_ea }, launched, usage)
- }
+diff --git a/apps/cli/src/commands/run/wrapper/play/mod.rs b/apps/cli/src/commands/run/wrapper/play/mod.rs
+index 0000000..0000000 100644
+--- a/apps/cli/src/commands/run/wrapper/play/mod.rs
++++ b/apps/cli/src/commands/run/wrapper/play/mod.rs
+@@ -31,3 +31,80 @@ use crate::time::{now_secs, stamp};
+ use crate::time::{now_secs, stamp};
  
 +fn wait_custom_loader(
 +    store: &Store,
@@ -361,9 +372,8 @@ index db9ce1be1..c0133ab0f 100644
 +    std::thread::spawn(move || child.wait().ok());
 +    Ok(())
 +}
- /// A session's folder under the sessions folder, with the loader log's mark
- /// from before the game started.
- struct SessionDir {
++
+ pub(crate) fn play(
 diff --git a/packages/core/src/lib.rs b/packages/core/src/lib.rs
 index f05c2467a..850d87e51 100644
 --- a/packages/core/src/lib.rs
